@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 *.tmp
 *.local.json
+
+# Local planning documents: never committed, at any depth
+**/plan/
