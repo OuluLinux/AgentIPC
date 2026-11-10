@@ -22,6 +22,7 @@ from agentipc import crypto, proto
 
 ITERATIONS = 100000
 CHALLENGE_TTL = 60
+VERIFY_TIMEOUT = 20.0    # seconds to wait for the authority to answer a token check
 TOKEN_TTL = 3600
 REPLY_KINDS = ("login-challenge", "login-result", "verify-result")
 
@@ -248,5 +249,5 @@ def verify_remote(node, token, callback):
             node.token_cache[token] = info
         callback(info)
 
-    if not node.request(node.authority, "verify", {"token": token}, done):
+    if not node.request(node.authority, "verify", {"token": token}, done, timeout=VERIFY_TIMEOUT):
         callback(None)

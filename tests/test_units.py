@@ -182,29 +182,29 @@ class FileServiceTest(unittest.TestCase):
         order = [2, 0, 1]
         for index in order:
             pkt = {"src": "SENDER", "payload": {
-                "id": "abc123", "name": "blob.dat", "index": index, "total": len(chunks),
+                "user": "alice", "id": "abc123", "name": "blob.dat", "index": index, "total": len(chunks),
                 "size": len(data), "sha256": digest,
                 "data": base64.b64encode(chunks[index]).decode("ascii")}}
             service._h_file(pkt)
-        with open(os.path.join(self.dir, "SENDER", "blob.dat"), "rb") as fh:
+        with open(os.path.join(self.dir, "alice@SENDER", "blob.dat"), "rb") as fh:
             self.assertEqual(fh.read(), data)
 
     def test_wrong_checksum_is_discarded(self):
         node = self._node()
         service = files.FileService(node, self.dir)
         service._h_file({"src": "S", "payload": {
-            "id": "t1", "name": "x.txt", "index": 0, "total": 1, "size": 3,
+            "user": "alice", "id": "t1", "name": "x.txt", "index": 0, "total": 1, "size": 3,
             "sha256": "0" * 64, "data": base64.b64encode(b"abc").decode("ascii")}})
-        self.assertFalse(os.path.exists(os.path.join(self.dir, "S", "x.txt")))
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "alice@S", "x.txt")))
 
     def test_bad_names_and_base64_are_ignored(self):
         node = self._node()
         service = files.FileService(node, self.dir)
         service._h_file({"src": "S", "payload": {
-            "id": "t2", "name": "../../etc", "index": 0, "total": 1, "size": 1,
+            "user": "alice", "id": "t2", "name": "../../etc", "index": 0, "total": 1, "size": 1,
             "sha256": "0" * 64, "data": "AAAA"}})
         service._h_file({"src": "S", "payload": {
-            "id": "t3", "name": "ok.bin", "index": 0, "total": 1, "size": 1,
+            "user": "alice", "id": "t3", "name": "ok.bin", "index": 0, "total": 1, "size": 1,
             "sha256": "0" * 64, "data": "!!!not base64"}})
         self.assertEqual(service.partial, {})
 

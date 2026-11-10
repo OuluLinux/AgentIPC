@@ -5,6 +5,7 @@ ssh is replaced by a fake script on PATH. It runs the remote command locally,
 with AGENTIPC_HOME set to the target's home, which is what sshd would do.
 """
 
+import atexit
 import json
 import os
 import shutil
@@ -20,6 +21,25 @@ REPO = os.path.dirname(HERE)
 sys.path.insert(0, REPO)
 
 from agentipc import auth  # noqa: E402
+
+# Node processes started by these tests. If a run is interrupted, the hook below
+# still kills whatever is left at exit, so no node outlives the test run.
+_PROCS = []
+
+
+def spawn(argv, **kwargs):
+    proc = subprocess.Popen(argv, **kwargs)
+    _PROCS.append(proc)
+    return proc
+
+
+def _kill_leftovers():
+    for proc in _PROCS:
+        if proc.poll() is None:
+            proc.kill()
+
+
+atexit.register(_kill_leftovers)
 
 FAKE_SSH = """#!/bin/sh
 # Test double for ssh: run the remote command locally, in the target's home.
@@ -105,7 +125,7 @@ class EndToEnd(unittest.TestCase):
     def start_node(cls, name):
         env = dict(cls.env, AGENTIPC_HOME=os.path.join(cls.homes, name))
         log = open(os.path.join(cls.tmp, name + ".log"), "ab")
-        return subprocess.Popen([sys.executable, os.path.join(REPO, "bin", "agentipc"), "node", "run"],
+        return spawn([sys.executable, os.path.join(REPO, "bin", "agentipc"), "node", "run"],
                                 env=env, stdout=log, stderr=log)
 
     @classmethod
@@ -185,6 +205,7 @@ class EndToEnd(unittest.TestCase):
                         received = os.path.join(root, name)
             time.sleep(0.1)
         self.assertIsNotNone(received)
+        self.assertIn(os.sep + "alice@", received)
         with open(received, "rb") as fh:
             self.assertEqual(fh.read(), data)
 
@@ -227,7 +248,7 @@ class DirectLinks(unittest.TestCase):
     def start(cls, name):
         env = dict(cls.env, AGENTIPC_HOME=os.path.join(cls.homes, name))
         log = open(os.path.join(cls.tmp, name + ".log"), "ab")
-        return subprocess.Popen([sys.executable, os.path.join(REPO, "bin", "agentipc"), "node", "run"],
+        return spawn([sys.executable, os.path.join(REPO, "bin", "agentipc"), "node", "run"],
                                 env=env, stdout=log, stderr=log)
 
     @classmethod
@@ -316,7 +337,7 @@ class Instances(unittest.TestCase):
     @classmethod
     def start(cls, home_name, node, control, listen):
         log = open(os.path.join(cls.tmp, home_name + ".log"), "ab")
-        return subprocess.Popen([sys.executable, os.path.join(REPO, "bin", "agentipc"),
+        return spawn([sys.executable, os.path.join(REPO, "bin", "agentipc"),
                                  "--home", cls.homes[home_name], "node", "run", "--node", node,
                                  "--control-port", str(control), "--listen", str(listen)],
                                 env=cls.env, stdout=log, stderr=log)

@@ -52,7 +52,11 @@ class FileService(object):
         except (TypeError, ValueError):
             return
         key = (sender, tid)
-        directory = os.path.join(self.inbox, sender)
+        # Folder per sending user and node. A missing or bad user name becomes "-".
+        user = p.get("user") if isinstance(p.get("user"), proto.string_types) else ""
+        if not NAME_RE.match(user):
+            user = "-"
+        directory = os.path.join(self.inbox, "%s@%s" % (user, sender))
         if not os.path.isdir(directory):
             os.makedirs(directory)
         temp = os.path.join(directory, ".partial-" + tid)

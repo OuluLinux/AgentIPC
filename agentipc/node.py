@@ -104,6 +104,11 @@ class Node(object):
                 return False
         return True
 
+    def watch(self, req, timeout):
+        """Fail request req with "timeout" if no reply comes within timeout seconds."""
+        with self.lock:
+            self.deadlines[req] = time.time() + timeout
+
     def resolve(self, payload):
         with self.lock:
             self.deadlines.pop(payload.get("req"), None)

@@ -40,6 +40,7 @@ except ImportError:  # Python 2
 
 MAX_BODY = 4096
 HISTORY_CHUNK = 50
+LOGIN_TIMEOUT = 20.0
 
 
 class RecordStore(object):
@@ -310,13 +311,14 @@ class ClientSession(object):
         else:
             user, server = parts
             sent = self.node.request(self.node.authority, "login-start", {"user": user, "server": server},
-                                     lambda payload: self._on_challenge(user, server, payload))
+                                     lambda payload: self._on_challenge(user, server, payload),
+                                     timeout=LOGIN_TIMEOUT)
             if not sent:
                 self.out("ERR no-route")
 
     def _on_challenge(self, user, server, payload):
         if not payload.get("ok", True) or "salt" not in payload:
-            self.out("ERR %s" % payload.get("reason", "login-failed"))
+            self.out("ERR %s" % payload.get("reason", payload.get("error", "login-failed")))
             return
         self._login = (user, server, payload["req"])
         self.out("CHALLENGE %s %d %s" % (payload["salt"], payload["iters"], payload["nonce"]))
@@ -328,11 +330,12 @@ class ClientSession(object):
         user, server, req = self._login
         self._login = None
         self.node.requests[req] = lambda payload: self._on_result(user, payload)
+        self.node.watch(req, LOGIN_TIMEOUT)
         self.node.send(self.node.authority, "login-proof", {"req": req, "proof": rest})
 
     def _on_result(self, user, payload):
         if not payload.get("ok"):
-            self.out("ERR %s" % payload.get("reason", "login-failed"))
+            self.out("ERR %s" % payload.get("reason", payload.get("error", "login-failed")))
             return
         self.user = user
         self.server = payload["server"]
@@ -476,7 +479,7 @@ class ClientSession(object):
         index = int(index_text)
         sent = self.node.send(upload["dst"], "file", {
             "id": upload["id"], "name": upload["name"], "index": index, "total": upload["total"],
-            "size": upload["size"], "sha256": upload["sha256"], "data": data})
+            "size": upload["size"], "sha256": upload["sha256"], "data": data, "user": self.user})
         if not sent:
             self._upload = None
             self.out("ERR no-route")
