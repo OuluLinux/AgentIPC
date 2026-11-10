@@ -7,7 +7,7 @@ done, and known gaps. [DESIGN.md](DESIGN.md) describes the design.
 
 ## Priorities
 
-1. Small C node (phase 11). Plain links, remote shell, file transfer.
+1. Small C node (phase 11). Plain links, remote shell, file transfer. Must speak the versioned protocol (DESIGN.md, "Versioning").
 2. Android app (phase 06). Sketch only; needs C-node-level work to be useful on the same mesh.
 3. Python 2.7 verification. **Postponed** until a Python 2.7 system is available (Gentoo py2.7 setup is hard).
 4. Link encryption (phase 10), then obfuscated HTTP/HTTPS (note only).
@@ -36,6 +36,7 @@ Automated tests: 71 tests, all passing under Python 3, with and without PyNaCl (
 | Remote start and rsync send | `remote start` and `send` build the right ssh and rsync commands | tests with a recording fake ssh and rsync; not run against a real sshd |
 | Watch | `vs watch` prints live messages as they arrive | end-to-end test |
 | Timers | ping, announce, node and alive timeouts set per node in config | config read at start; not separately tested |
+| Protocol versions | wire v2 with version range and features; version 1 refused; client `VERSION` command | unit, in-process raw-peer and end-to-end tests; live mesh restarted together on v2 |
 | Error text | error codes keep their code and add a plain reason | unit tests |
 | Target bridge command | per-target `command` for `vs --ssh` | end-to-end tests; live |
 
@@ -55,7 +56,6 @@ three-hop chain, direct triangle, node loss and recovery, shell on all nodes.
 - Web UI (phase 08). Parked.
 - Rekeying of encrypted servers on membership change.
 - Pruning of stored records and membership. Storage grows without bounds.
-- Protocol version bump to 2. Deliberately not done; the multicast change is compatible only with nodes running this commit or later.
 
 ## Known gaps
 
