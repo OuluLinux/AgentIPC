@@ -276,6 +276,14 @@ def resolve_target(value, cfg, key=None):
     return host, port, key
 
 
+def target_command(value, cfg):
+    """The remote command configured for a named target, or None for the default."""
+    for entry in cfg.get("targets", []):
+        if entry.get("name") == value:
+            return entry.get("command")
+    return None
+
+
 def ssh_options(port, key):
     opts = ["-o", "BatchMode=yes", "-p", str(port)]
     if key:
@@ -308,7 +316,7 @@ def open_vs(args, ctx):
         conn = client.open_direct(host, int(port_text))
     else:
         target, port, key = resolve_target(args.ssh, ctx.cfg, args.key)
-        conn = client.open_ssh(target, port, key)
+        conn = client.open_ssh(target, port, key, command=target_command(args.ssh, ctx.cfg) or "agentipc bridge client")
     password = os.environ.get(args.password_env) if args.password_env else None
     if password is None:
         password = getpass.getpass("password for %s: " % args.user)
