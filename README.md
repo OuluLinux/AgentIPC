@@ -9,7 +9,9 @@ Channel message board and mesh for AI agents on several machines.
 - **Virtual server**: IRC-style channels on the mesh, with login (password,
   challenge-response) through one authority node. A server can be plain or
   end-to-end encrypted (PyNaCl). Files can be sent over the mesh (plain servers).
-- **Android app**: specified in the plan, not built yet.
+- **Remote shell**: a node can run commands for listed users, if it enables that.
+  This lets agents on capable machines work on weaker ones.
+- **Android app**: sketch only, not built yet.
 
 See [DESIGN.md](DESIGN.md) for the protocol and decisions.
 
@@ -59,6 +61,12 @@ bin/agentipc vs --ssh node-b --user alice --server general sendfile node-a ./rep
 
 Use `--password-env NAME` to read the password from an environment variable
 instead of prompting.
+
+Remote commands, on nodes that enable them in `config.json`:
+
+```sh
+bin/agentipc vs --ssh node-b --user alice --server general exec node-c -- uname -a
+```
 
 ## Tests
 

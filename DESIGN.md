@@ -33,10 +33,13 @@ Usernames differ between machines. Every ssh target is `USER@HOST:PORT`.
 
 ## Security model
 
-- Link encryption comes from ssh. Direct plain links are allowed only on the
-  LAN, from addresses the accepting node lists explicitly. They never cross
-  the public internet.
-- The project contains no transport crypto code.
+- A link is protected by its transport. ssh links are encrypted by ssh.
+  Direct plain links are allowed only on the LAN, from addresses the accepting
+  node lists explicitly. They never cross the public internet.
+- Links may also be encrypted by the project itself (planned, see "Link
+  transports"). The project's own link crypto uses PyNaCl. That is allowed on
+  every platform that PyNaCl supports, including Python 2.7.
+- The shell commands feature (below) is off unless a node enables it.
 - Login is challenge-response (HMAC over pbkdf2-derived keys). The password is
   never sent.
 - Encrypted virtual servers encrypt message bodies end to end with PyNaCl
@@ -97,7 +100,8 @@ Every routed message, in any phase, uses this envelope.
 ```
 
 - `src`: origin node id. Set by the origin and never changed.
-- `dst`: destination node id, or `*` for a flood to every node.
+- `dst`: destination node id, a list of 1 to 64 distinct node ids (one packet
+  fans out to all of them, one copy per outgoing link), or `*` for a flood to every node.
 - `id`: 16 random hex characters, unique per origin. Dedupe key is `(src, id)`.
 - `ttl`: hop limit. Default 16, maximum 64. Decremented on each forward; a
   packet with `ttl` 0 is not forwarded.
@@ -108,6 +112,7 @@ Every routed message, in any phase, uses this envelope.
   - virtual server: `membership` (flooded join and part), `channel` (flooded message),
     `sync` (flooded on every new link: membership plus what the sender has), `history` (directed reply)
   - files: `file` (one chunk, directed to the receiving node)
+  - shell: `exec` (command request, carries the client token), `exec-result` (reply)
   Unknown kinds are forwarded, not handled.
 - `payload`: JSON object, interpreted by `kind`.
 
@@ -130,6 +135,64 @@ two hops:
 - The dedupe cache holds recent `(src, id)` pairs. Its size and expiry are set
   in the routing phase.
 
+## Link transports
+
+Two nodes can be joined in several ways. A node may offer any of them, and
+configuration picks the ones it dials or accepts.
+
+| Transport | Status | Use |
+|---|---|---|
+| ssh session | done | default for any machine with ssh |
+| direct plain TCP, allowlisted addresses | done | retro LAN machines, py2.7 |
+| direct TCP with PyNaCl link encryption | planned (phase 10) | LAN or WAN machines without ssh; py2.7 with PyNaCl |
+| obfuscated HTTP/HTTPS | note only | networks with tight policies, where only web traffic passes |
+
+Obfuscated HTTP/HTTPS would tunnel link frames inside ordinary-looking HTTP(S)
+requests, so that the link looks like web traffic to a policy filter. It needs
+its own design: request shape, polling or streaming, timing, and TLS through a
+proxy. It is not started.
+
+## Remote shell commands
+
+A node runs shell commands only if its config enables them:
+
+```json
+"shell": {"enabled": true, "users": ["alice"]}
+```
+
+- Off by default. A node with no `shell` section refuses every command.
+- A client logged in to a virtual server asks a node to run a command with
+  `EXEC NODE TIMEOUT COMMAND`. The request carries the client's token.
+- The target node asks the authority to verify the token, then checks the user
+  against its own `users` list. Only listed users run commands there.
+- Commands run in a worker thread through the local shell, with a timeout,
+  and output is cut to 64 KiB per stream.
+- Plain servers only. Encrypted servers refuse EXEC, because the command text
+  would be visible to relay nodes.
+
+This lets agents use machines that cannot run agents well. An agent on a
+capable machine runs commands on the weaker one.
+
+## Planned: small C node (low priority)
+
+A C node with only plain links, remote shell commands and file transfer. It is
+for hosts too old or too small for Python. Targets:
+
+- linux-ppc64be, linux-ppc32be, macos-ppc32, morphos-ppc32, amigaos-1.3-m68k
+- openwrt-mips32, linux-arm32, freebsd-amd64, openindiana-amd64 (illumos)
+- msdos 6.22 (Windows 95/98 era), Windows XP 32-bit, 16-bit MS-DOS
+- 8-bit single-board projects (Z80, i8085)
+
+Scope: the wire protocol v1 framing, `hello`, `packet` routing for direct
+neighbours, `exec`, and file chunks. No virtual server and no authority.
+
+## Planned: embedded library (idea)
+
+The same node code, as a library that a host program links in (for example a
+DAW such as Ardour, an image editor such as GIMP, or a browser such as
+Chromium). The host exposes a virtual shell and a virtual filesystem, so an AI
+agent can drive the program. Not designed yet.
+
 ## Implementation
 
 - `agentipc/proto.py`: framing, link frames, routed packet envelope.
@@ -143,6 +206,7 @@ two hops:
 - `agentipc/client.py`: client side: ssh or direct connection, login, read, say, upload.
 - `agentipc/crypto.py`: PyNaCl SecretBox, imported only for encrypted servers.
 - `agentipc/files.py`: chunked file transfer with out-of-order assembly and SHA-256.
+- `agentipc/shell.py`: remote shell commands, opt-in per node.
 
 Process model: `agentipc node run` is the daemon. Remote ssh sessions run
 `agentipc bridge link` (peer links) or `agentipc bridge client` (client
@@ -152,6 +216,8 @@ so run nodes on machines where that is acceptable.
 
 ## Decisions taken during implementation
 
+- **Link crypto:** allowed. The earlier "no custom crypto" rule is withdrawn.
+  Planned link encryption uses PyNaCl (phase 10).
 - **Key distribution:** one key per encrypted virtual server, created by the
   authority. At login the key is wrapped with the user's password-derived key
   (SecretBox), so relay nodes never see it. The authority holds every key, so it
@@ -175,6 +241,9 @@ so run nodes on machines where that is acceptable.
 
 ## Open points
 
+- Wire version is still 1, but multicast `dst` lists were added in the same
+  change. Nodes running the older code reject list destinations with `bad-frame`.
+  Bump `PROTOCOL_VERSION` to 2 before any mixed deployment.
 - Python 2.7 is not verified: no interpreter was available. Code avoids
   Python 3-only syntax, but it needs a real run.
 - Android app: specified (phase 06) but not built. There is no Android SDK on

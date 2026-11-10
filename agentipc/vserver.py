@@ -19,6 +19,8 @@ Client protocol, one command per line. Replies are lines too:
     SENDFILE NODE NAME SIZE TOTAL SHA256 ID
                              -> (then FILECHUNK INDEX BASE64 for each chunk)
                                 FILESENT ID  or ERR REASON
+    EXEC NODE TIMEOUT CMD    -> EXECRESULT {json}  or ERR REASON
+                                (runs only where that node enables shell commands)
     QUIT                     -> BYE
 
 Live messages arrive as MSG {json} with "kind": "live".
@@ -223,6 +225,7 @@ class ClientSession(object):
         self.wfile = wfile
         self.user = None
         self.server = None
+        self.token = None
         self.encrypted = False
         self.joined = set()
         self._login = None        # (user, server, req) while a login is in progress
@@ -271,6 +274,7 @@ class ClientSession(object):
         rest = rest.strip()
         handler = {
             "LOGIN": self._cmd_login, "PROOF": self._cmd_proof, "TOKEN": self._cmd_token,
+            "EXEC": self._cmd_exec,
             "JOIN": self._cmd_join, "PART": self._cmd_part, "SAY": self._cmd_say,
             "NAMES": self._cmd_names, "NODES": self._cmd_nodes, "QUIT": self._cmd_quit,
             "SENDFILE": self._cmd_sendfile, "FILECHUNK": self._cmd_filechunk,
@@ -332,6 +336,7 @@ class ClientSession(object):
             return
         self.user = user
         self.server = payload["server"]
+        self.token = payload["token"]
         self.encrypted = bool(payload["encrypted"])
         self.out("OK %s %s %d" % (payload["token"], self.server, 1 if self.encrypted else 0))
         if payload.get("wrapped"):
@@ -349,6 +354,7 @@ class ClientSession(object):
                 self.out("ERR encrypted-server-needs-password")
             else:
                 self.user, self.server, self.encrypted = info["user"], info["server"], False
+                self.token = rest
                 self.out("OK %s %s 0" % (rest, self.server))
 
         auth.verify_remote(self.node, rest, done)
@@ -403,6 +409,33 @@ class ClientSession(object):
     def _cmd_quit(self, rest):
         self.out("BYE")
         self._closing = True
+
+    # ----- shell -------------------------------------------------------
+
+    def _cmd_exec(self, rest):
+        parts = rest.split(" ", 2)
+        if self._need_login():
+            return
+        if self.encrypted:
+            self.out("ERR encrypted-server-has-no-exec")
+            return
+        if len(parts) != 3 or not proto.NODE_RE.match(parts[0]) or not parts[1].isdigit():
+            self.out("ERR usage: EXEC NODE TIMEOUT COMMAND")
+            return
+        node_id, timeout, command = parts[0], int(parts[1]), parts[2]
+
+        def done(payload):
+            if "error" in payload:
+                self.out("ERR %s" % payload["error"])
+            else:
+                self.out("EXECRESULT " + _json(payload))
+
+        # Allow the command's own timeout plus room for the trip over the mesh.
+        sent = self.node.request(node_id, "exec", {
+            "token": self.token, "command": command, "timeout": timeout}, done,
+            timeout=timeout + 15)
+        if not sent:
+            self.out("ERR no-route")
 
     # ----- files -------------------------------------------------------
 

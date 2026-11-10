@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 
-from agentipc import auth, files, vserver
+from agentipc import auth, files, shell, vserver
 from agentipc.node import Node
 
 CONTROL_HOST = "127.0.0.1"
@@ -51,6 +51,7 @@ class Daemon(object):
             self.node, auth.Accounts(os.path.join(home, "accounts.json")) if self.node.is_authority() else None)
         self.vs = vserver.VirtualServer(self.node, os.path.join(home, "mesh", "records.jsonl"))
         self.files = files.FileService(self.node, os.path.join(home, "inbox"))
+        self.shell = shell.ShellService(self.node, cfg.get("shell"))
         self._stopping = threading.Event()
         self._sockets = []
 

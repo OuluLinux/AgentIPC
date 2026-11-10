@@ -148,3 +148,19 @@ class MulticastTest(unittest.TestCase):
         connect(a, b)
         connect(b, c)
         self.assertTrue(wait_for(lambda: "B" in a.pings.last and "C" in a.pings.last))
+
+
+class RequestTimeoutTest(unittest.TestCase):
+    def test_unanswered_request_fails_after_its_deadline(self):
+        a, b = new_node("A"), new_node("B")
+        try:
+            connect(a, b)
+            self.assertTrue(wait_for(lambda: a.topology.next_hop("B") == "B"))
+            replies = []
+            # B has no handler for "silent", so nothing ever answers.
+            self.assertTrue(a.request("B", "silent", {}, replies.append, timeout=0.3))
+            self.assertTrue(wait_for(lambda: replies))
+            self.assertEqual(replies[0]["error"], "timeout")
+        finally:
+            a.stop()
+            b.stop()

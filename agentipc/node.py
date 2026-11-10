@@ -26,6 +26,7 @@ class Node(object):
         self.seen = SeenCache()
         self.handlers = {}        # packet kind -> fn(packet)
         self.requests = {}        # request id -> callback(payload)
+        self.deadlines = {}       # request id -> time after which it fails with "timeout"
         self.services = []        # objects with on_link_up(link) and on_node_gone(node)
         self.oseq = 0             # sequence for records originated here
         self.ping_interval = 10.0
@@ -85,20 +86,26 @@ class Node(object):
             targets = [d for d in proto.destinations(dst) if self.seen.add((self.id, pkt["id"], d))]
             return self._forward(pkt, targets, None)
 
-    def request(self, dst, kind, payload, callback):
-        """Send a packet whose reply is handed to callback(payload) by resolve()."""
+    def request(self, dst, kind, payload, callback, timeout=None):
+        """Send a packet whose reply is handed to callback(payload) by resolve().
+
+        With a timeout, callback gets {"req": ..., "error": "timeout"} if no reply came in time."""
         req = proto.new_id()
         body = dict(payload)
         body["req"] = req
         with self.lock:
             self.requests[req] = callback
+            if timeout is not None:
+                self.deadlines[req] = time.time() + timeout
             if not self.send(dst, kind, body):
                 self.requests.pop(req, None)
+                self.deadlines.pop(req, None)
                 return False
         return True
 
     def resolve(self, payload):
         with self.lock:
+            self.deadlines.pop(payload.get("req"), None)
             callback = self.requests.pop(payload.get("req"), None)
         if callback is not None:
             callback(payload)
@@ -266,4 +273,16 @@ class Node(object):
                 for origin in self.topology.expire(now, self.node_timeout):
                     for service in self.services:
                         service.on_node_gone(origin)
+            self._expire_requests(now)
             time.sleep(0.05)
+
+    def _expire_requests(self, now):
+        with self.lock:
+            late = []
+            for req in [r for r, when in self.deadlines.items() if now >= when]:
+                del self.deadlines[req]
+                callback = self.requests.pop(req, None)
+                if callback is not None:
+                    late.append((callback, req))
+        for callback, req in late:
+            callback({"req": req, "error": "timeout"})

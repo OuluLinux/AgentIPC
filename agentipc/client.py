@@ -159,6 +159,18 @@ class Session(object):
             raise ClientError(line)
         return line.split()[1]
 
+    def execute(self, node_id, command, timeout=60):
+        """Run a command on a node that enables shell commands. Returns its result dict."""
+        if "\n" in command or "\r" in command:
+            raise ClientError("command must be one line")
+        self.conn.send("EXEC %s %d %s" % (node_id, timeout, command))
+        line = self.conn.readline()
+        if line.startswith("ERR"):
+            raise ClientError(line)
+        if not line.startswith("EXECRESULT "):
+            raise ClientError("unexpected reply: " + line)
+        return json.loads(line[len("EXECRESULT "):])
+
     def next_message(self):
         """Block for the next line; returns a decoded live message, or None for other lines."""
         line = self.conn.readline()

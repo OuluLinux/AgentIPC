@@ -192,6 +192,28 @@ class FileServiceTest(unittest.TestCase):
         self.assertEqual(service.partial, {})
 
 
+class ShellTest(unittest.TestCase):
+    def test_output_and_exit_code(self):
+        from agentipc import shell
+        result = shell.run_command("echo ok; echo bad >&2; exit 4", 10)
+        self.assertEqual(result["stdout"], "ok\n")
+        self.assertEqual(result["stderr"], "bad\n")
+        self.assertEqual(result["exit"], 4)
+        self.assertFalse(result["timed_out"])
+
+    def test_timeout_kills_the_command(self):
+        from agentipc import shell
+        result = shell.run_command("sleep 30", 0.5)
+        self.assertTrue(result["timed_out"])
+        self.assertIsNone(result["exit"])
+
+    def test_large_output_is_cut(self):
+        from agentipc import shell
+        result = shell.run_command("head -c 200000 /dev/zero | tr '\\0' a", 10)
+        self.assertTrue(result["truncated"])
+        self.assertEqual(len(result["stdout"]), shell.MAX_OUTPUT)
+
+
 class RecordTest(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()

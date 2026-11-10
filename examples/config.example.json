@@ -8,6 +8,7 @@
     {"kind": "ssh", "target": "user@example.invalid", "port": 22, "key": "~/.ssh/id_ed25519"},
     {"kind": "direct", "host": "192.0.2.10", "port": 7430}
   ],
+  "shell": {"enabled": false, "users": ["alice"]},
   "targets": [
     {"name": "hub", "target": "user@example.invalid", "port": 22, "key": "~/.ssh/id_ed25519"}
   ]

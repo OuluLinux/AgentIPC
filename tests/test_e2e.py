@@ -78,7 +78,8 @@ class EndToEnd(unittest.TestCase):
             cls.ports[name] = free_port()
         cls.write_config("AUTH", {"authority": "AUTH"})
         cls.write_config("A", {"authority": "AUTH", "peers": [{"kind": "ssh", "target": "AUTH@localhost"}]})
-        cls.write_config("C", {"authority": "AUTH", "peers": [{"kind": "ssh", "target": "A@localhost"}]})
+        cls.write_config("C", {"authority": "AUTH", "peers": [{"kind": "ssh", "target": "A@localhost"}],
+                               "shell": {"enabled": True, "users": ["alice"]}})
         accounts = auth.Accounts(os.path.join(cls.homes, "AUTH", "accounts.json"))
         accounts.add_user("alice", "alice-pw")
         accounts.add_user("bob", "bob-pw")
@@ -140,6 +141,31 @@ class EndToEnd(unittest.TestCase):
         _, err = proc.communicate(timeout=20)
         self.assertEqual(proc.returncode, 1)
         self.assertIn(b"bad-login", err)
+
+    def exec_as(self, user, password, via, node, command):
+        env = dict(self.env, PW=password)
+        cmd = [sys.executable, os.path.join(REPO, "bin", "agentipc"), "vs", "--ssh", via + "@localhost",
+               "--user", user, "--server", "plain", "--password-env", "PW",
+               "exec", node, "--timeout", "10", "--"] + command
+        proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out, err = proc.communicate(timeout=30)
+        return proc.returncode, out.decode("utf-8"), err.decode("utf-8")
+
+    def test_exec_runs_where_shell_is_enabled(self):
+        code, out, err = self.exec_as("alice", "alice-pw", "A", "C", ["echo", "hi-from-C;", "exit", "3"])
+        self.assertEqual(out, "hi-from-C\n")
+        self.assertEqual(code, 3)
+
+    def test_exec_refused_where_shell_is_disabled(self):
+        code, out, err = self.exec_as("alice", "alice-pw", "A", "A", ["echo", "nope"])
+        self.assertEqual(out, "")
+        self.assertIn("shell-disabled", err)
+        self.assertEqual(code, 1)
+
+    def test_exec_refused_for_a_user_not_on_the_list(self):
+        code, out, err = self.exec_as("bob", "bob-pw", "A", "C", ["echo", "nope"])
+        self.assertEqual(out, "")
+        self.assertIn("not-allowed", err)
 
     def test_file_crosses_the_mesh(self):
         src = os.path.join(self.tmp, "payload.bin")

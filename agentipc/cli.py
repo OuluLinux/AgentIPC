@@ -309,6 +309,7 @@ def print_message(rec):
 
 def cmd_vs(args, ctx):
     session = open_vs(args, ctx)
+    code = 0
     try:
         if args.action == "read":
             for rec in session.join(args.channel):
@@ -334,8 +335,18 @@ def cmd_vs(args, ctx):
         elif args.action == "sendfile":
             tid = session.send_file(args.node, args.path)
             print("sent %s (transfer %s)" % (args.path, tid))
+        elif args.action == "exec":
+            result = session.execute(args.node, " ".join(args.command), args.timeout)
+            sys.stdout.write(result["stdout"])
+            sys.stderr.write(result["stderr"])
+            if result["truncated"]:
+                sys.stderr.write("agentipc: output truncated\n")
+            if result["timed_out"]:
+                sys.stderr.write("agentipc: command timed out\n")
+            code = result["exit"] if result["exit"] is not None else 1
     finally:
         session.quit()
+    return code
 
 
 # ----- argument parsing -------------------------------------------------
@@ -444,6 +455,10 @@ def build_parser():
     a = actions.add_parser("sendfile")
     a.add_argument("node")
     a.add_argument("path")
+    a = actions.add_parser("exec", help="run a command on a node that enables shell commands")
+    a.add_argument("node")
+    a.add_argument("--timeout", type=int, default=60, help="seconds (max 600)")
+    a.add_argument("command", nargs="+")
     sp.set_defaults(func=cmd_vs)
     return p
 
@@ -467,7 +482,7 @@ def main(argv=None):
     home_dir = config_mod.home()
     ctx = _Context(home_dir, config_mod.load(home_dir))
     try:
-        args.func(args, ctx)
+        return args.func(args, ctx) or 0
     except (StoreError, client.ClientError, crypto.CryptoError, KeyError, IOError, OSError) as exc:
         print("agentipc: %s" % exc, file=sys.stderr)
         return 1
