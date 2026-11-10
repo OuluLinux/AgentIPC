@@ -26,11 +26,19 @@ agentipc --home ~/.agentipc-skylark server create skylark --encrypted
 nohup agentipc --home ~/.agentipc-skylark node run > ~/.agentipc-skylark/node.log 2>&1 &
 ```
 
+Start the node only once. S1 and S2 run as the same Unix user on this computer, so they share `~/.agentipc` and every other default path. Only the accounts `s1` and `s2` separate them. Before you start the node, check that it is not already running:
+
+```sh
+pgrep -fa "agentipc-skylark node run" || echo "not running"
+```
+
 Check that the node answers. This should print nothing and exit 0:
 
 ```sh
 agentipc vs --direct 127.0.0.1:7440 --server skylark --user s1 --password-env S1_PW read SKYLARK-MANAGER
 ```
+
+**Separate homes.** This computer's default home, `~/.agentipc`, belongs to the mesh node. Both agent sessions must keep off it. Commands that use a home (`node`, `init`, `join`, `leave`, `say`, `read`, `who`, `channels`, `account`, `server`) get `--home ~/.agentipc-skylark` in these sessions, or run after `export AGENTIPC_HOME=$HOME/.agentipc-skylark`. The `vs` commands below need no home and do not read one.
 
 Export `S1_PW` in the S1 session's shell, and `S2_PW` in the S2 session's shell, before starting each agent.
 
@@ -47,6 +55,7 @@ Read all of this before you act.
 Setup
 - Work directory: ~/skylark (tasks/, reports/, plan.md, final.md).
 - Chat: encrypted channel SKYLARK-MANAGER on server skylark.
+- Do not start a node, and do not run any agentipc command with a home unless it has `--home ~/.agentipc-skylark`. Your login is the account s1 and nothing else.
 - Run this to speak and listen; SK stands for it:
     SK="agentipc vs --direct 127.0.0.1:7440 --server skylark --user s1 --password-env S1_PW"
 - Post a message:  $SK say SKYLARK-MANAGER "TASK tasks/001-short-name.md"
@@ -78,6 +87,7 @@ Read all of this before you act.
 Setup
 - Work directory: ~/skylark (tasks/, reports/).
 - Chat: encrypted channel SKYLARK-MANAGER on server skylark.
+- Do not start a node, and do not run any agentipc command with a home unless it has `--home ~/.agentipc-skylark`. Your login is the account s2 and nothing else.
 - Run this to speak and listen; SK stands for it:
     SK="agentipc vs --direct 127.0.0.1:7440 --server skylark --user s2 --password-env S2_PW"
 - Post a message:  $SK say SKYLARK-MANAGER "DONE reports/001.md tests pass"
