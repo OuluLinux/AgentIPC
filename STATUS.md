@@ -1,6 +1,6 @@
 # AgentIPC status
 
-Last updated: 2026-11-10. Commit `e91d439`, plus the status notes.
+Last updated: 2026-11-10. Latest code commit: see `git log`. 76 tests.
 
 This file lists what is implemented, what was tested and how, what is not
 done, and known gaps. [DESIGN.md](DESIGN.md) describes the design.
@@ -33,7 +33,10 @@ Automated tests: 71 tests, all passing under Python 3, with and without PyNaCl (
 | Inbox per user | received files are filed under `user@node` | unit and end-to-end tests; live file transfer |
 | Remote shell | opt-in per node, user allowlist, token checked by authority, timeout, output cap, exit code | unit and end-to-end tests; live exec on four nodes |
 | Multiple instances per machine | `--home`, `node run --node/--control-port/--listen`, separate data | end-to-end test with two instances; live two instances on one machine |
-| Remote start and rsync send | `remote start` and `send` commands | written; **not run**, no test |
+| Remote start and rsync send | `remote start` and `send` build the right ssh and rsync commands | tests with a recording fake ssh and rsync; not run against a real sshd |
+| Watch | `vs watch` prints live messages as they arrive | end-to-end test |
+| Timers | ping, announce, node and alive timeouts set per node in config | config read at start; not separately tested |
+| Error text | error codes keep their code and add a plain reason | unit tests |
 | Target bridge command | per-target `command` for `vs --ssh` | end-to-end tests; live |
 
 Live test network (three machines, one of them the authority): ssh star, direct star,
@@ -61,7 +64,7 @@ three-hop chain, direct triangle, node loss and recovery, shell on all nodes.
 - **Shell access is broad.** Any user on a node's `shell.users` list runs arbitrary commands as that node's user. Keep lists short.
 - **Plain servers expose messages to relays.** Message bodies on a plain server are readable by every node that carries them.
 - **Control socket is local-only but unauthenticated.** Any local user can reach `127.0.0.1` control ports.
-- **Refusal messages are terse.** Login errors are short codes, and so are direct-link refusals.
+- **Store grows.** Channel records and membership are never pruned.
 - **Python 2.7 untested.** See above.
 
 ## Test environment notes

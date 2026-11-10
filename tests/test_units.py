@@ -270,3 +270,13 @@ class RecordTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExplainTest(unittest.TestCase):
+    def test_known_codes_get_a_reason_and_keep_the_code(self):
+        from agentipc import client
+        self.assertEqual(client.explain("ERR bad-login"), "ERR bad-login: wrong user or password")
+
+    def test_unknown_codes_pass_through(self):
+        from agentipc import client
+        self.assertEqual(client.explain("ERR something-new"), "ERR something-new")

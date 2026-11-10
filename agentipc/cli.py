@@ -325,6 +325,7 @@ def open_vs(args, ctx):
 
 def print_message(rec):
     print("#%s [%s] %s: %s" % (rec.get("chan", ""), rec.get("ts", ""), rec.get("user", "?"), rec.get("body", "")))
+    sys.stdout.flush()
 
 
 def cmd_vs(args, ctx):

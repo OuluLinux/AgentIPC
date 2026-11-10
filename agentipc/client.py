@@ -20,6 +20,35 @@ class ClientError(Exception):
     pass
 
 
+REASONS = {
+    "bad-login": "wrong user or password",
+    "expired": "login took too long; try again",
+    "login-failed": "login failed",
+    "no-authority": "this node has no authority configured",
+    "unknown-server": "no such virtual server",
+    "no-route": "the authority cannot be reached from this node",
+    "invalid-token": "the session token was rejected",
+    "encrypted-server-needs-password": "encrypted servers need a password login",
+    "encrypted-server-has-no-exec": "shell commands are not available on encrypted servers",
+    "encrypted-server-has-no-file-transfer": "file transfer is not available on encrypted servers",
+    "shell-disabled": "shell commands are off on that node",
+    "not-allowed": "not allowed: check the node's allow list or shell users",
+    "timeout": "no answer in time",
+    "not-joined": "join the channel first",
+    "bad-body": "message is empty or too long",
+    "bad-frame": "the node sent something it cannot read",
+}
+
+
+def explain(line):
+    """'ERR bad-login' becomes 'ERR bad-login: wrong user or password'."""
+    parts = line.split(" ", 1)
+    code = parts[1] if len(parts) > 1 else line
+    if code in REASONS:
+        return "%s: %s" % (line, REASONS[code])
+    return line
+
+
 class Connection(object):
     def __init__(self, rfile, wfile, closer=None):
         self.rfile = rfile
@@ -98,7 +127,7 @@ class Session(object):
         while True:
             line = self.conn.readline()
             if line.startswith("ERR"):
-                raise ClientError(line)
+                raise ClientError(explain(line))
             if line.startswith("MSG "):
                 messages.append(self._decode(json.loads(line[4:])))
             elif line == "ENDHIST #%s" % chan:
@@ -115,7 +144,7 @@ class Session(object):
         while True:
             line = self.conn.readline()
             if line.startswith("ERR"):
-                raise ClientError(line)
+                raise ClientError(explain(line))
             if line.startswith("SENT "):
                 return int(line.split()[1]), live
             if line.startswith("MSG "):
@@ -128,7 +157,7 @@ class Session(object):
         while True:
             line = self.conn.readline()
             if line.startswith("ERR"):
-                raise ClientError(line)
+                raise ClientError(explain(line))
             if line.startswith("NAME "):
                 found.append(json.loads(line[5:]))
             elif line == "ENDNAMES #%s" % chan:
@@ -156,7 +185,7 @@ class Session(object):
             self.conn.send("FILECHUNK %d %s" % (index, base64.b64encode(chunk).decode("ascii")))
         line = self.conn.readline()
         if line.startswith("ERR"):
-            raise ClientError(line)
+            raise ClientError(explain(line))
         return line.split()[1]
 
     def execute(self, node_id, command, timeout=60):
@@ -166,7 +195,7 @@ class Session(object):
         self.conn.send("EXEC %s %d %s" % (node_id, timeout, command))
         line = self.conn.readline()
         if line.startswith("ERR"):
-            raise ClientError(line)
+            raise ClientError(explain(line))
         if not line.startswith("EXECRESULT "):
             raise ClientError("unexpected reply: " + line)
         return json.loads(line[len("EXECRESULT "):])
@@ -199,13 +228,13 @@ def login(conn, user, server, password):
     conn.send("LOGIN %s %s" % (user, server))
     line = conn.readline()
     if line.startswith("ERR"):
-        raise ClientError(line)
+        raise ClientError(explain(line))
     _, salt, iters, nonce = line.split()
     key = auth.derive_key(password, auth.unhexlify(salt), int(iters))
     conn.send("PROOF " + auth.proof_for(key, nonce))
     line = conn.readline()
     if line.startswith("ERR"):
-        raise ClientError(line)
+        raise ClientError(explain(line))
     _, token, srv, enc = line.split()
     server_key = None
     if enc == "1":
@@ -221,6 +250,6 @@ def login_token(conn, token):
     conn.send("TOKEN " + token)
     line = conn.readline()
     if line.startswith("ERR"):
-        raise ClientError(line)
+        raise ClientError(explain(line))
     _, tok, srv, enc = line.split()
     return Session(conn, None, srv, enc == "1", None, tok)

@@ -45,6 +45,10 @@ class Daemon(object):
         self.cfg = cfg
         self.home = home
         self.node = Node(node_id, authority=cfg.get("authority"))
+        # Timers can be tuned per node. Keys are seconds.
+        for key in ("ping_interval", "announce_interval", "node_timeout", "alive_timeout"):
+            if key in cfg:
+                setattr(self.node, key, float(cfg[key]))
         self.control_port = cfg.get("control_port", DEFAULT_CONTROL_PORT)
         self.listen_port = None
         self.authority = auth.install(

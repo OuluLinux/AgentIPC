@@ -299,6 +299,76 @@ def wait_for_text(fn, needle, timeout=15):
     return False
 
 
+class WatchAndRemote(unittest.TestCase):
+    """`vs watch` shows live messages; `remote start` and `send` build the right commands."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        cls.home = os.path.join(cls.tmp, "home")
+        cls.bin = os.path.join(cls.tmp, "bin")
+        os.makedirs(cls.home)
+        os.makedirs(cls.bin)
+        cls.env = dict(os.environ, PW="123", AGENTIPC_HOME=cls.home)
+        cls.port = free_port()
+        with open(os.path.join(cls.home, "config.json"), "w") as fh:
+            json.dump({"node": "solo", "authority": "solo", "allow": ["127.0.0.1"], "listen": cls.port}, fh)
+        cls.agentipc = [sys.executable, os.path.join(REPO, "bin", "agentipc")]
+        subprocess.check_call(cls.agentipc + ["--home", cls.home, "account", "add", "user", "--password-env", "PW"],
+                              env=cls.env)
+        subprocess.check_call(cls.agentipc + ["--home", cls.home, "server", "create", "plain"], env=cls.env)
+        cls.node = spawn(cls.agentipc + ["--home", cls.home, "node", "run", "--node", "solo",
+                                         "--control-port", str(free_port())],
+                         env=cls.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        assert wait_port(cls.port)
+        time.sleep(1.0)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.node.terminate()
+        cls.node.wait()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def vs(self, *args):
+        return subprocess.check_output(self.agentipc + ["vs", "--direct", "127.0.0.1:%d" % self.port,
+                                                        "--user", "user", "--server", "plain",
+                                                        "--password-env", "PW"] + list(args),
+                                       env=self.env, stderr=subprocess.STDOUT).decode("utf-8")
+
+    def test_watch_shows_a_live_message(self):
+        watcher = spawn(self.agentipc + ["vs", "--direct", "127.0.0.1:%d" % self.port, "--user", "user",
+                                         "--server", "plain", "--password-env", "PW", "watch", "general"],
+                        env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        time.sleep(2.0)
+        self.vs("say", "general", "watch-test-message")
+        time.sleep(2.0)
+        watcher.kill()
+        out, err = watcher.communicate()
+        self.assertIn(b"watch-test-message", out, err)
+
+    def recorded(self, name, args):
+        """Run `remote`/`send` with a fake ssh or rsync that only writes its argv to a file."""
+        log = os.path.join(self.tmp, name + ".argv")
+        fake = os.path.join(self.bin, name)
+        with open(fake, "w") as fh:
+            fh.write('#!/bin/sh\nprintf "%%s\\n" "$@" > "%s"\n' % log)
+        os.chmod(fake, 0o755)
+        env = dict(self.env, PATH=self.bin + os.pathsep + os.environ["PATH"])
+        subprocess.check_call(self.agentipc + args, env=env)
+        with open(log) as fh:
+            return fh.read().split("\n")[:-1]
+
+    def test_remote_start_builds_an_ssh_command(self):
+        argv = self.recorded("ssh", ["remote", "start", "sblo@example.invalid:2222", "--key", "/keys/id"])
+        self.assertEqual(argv, ["-o", "BatchMode=yes", "-p", "2222", "-i", "/keys/id", "sblo@example.invalid",
+                                "nohup agentipc node run >/dev/null 2>&1 </dev/null &"])
+
+    def test_send_builds_an_rsync_command_over_ssh(self):
+        argv = self.recorded("rsync", ["send", "sblo@example.invalid", "report.txt", "/tmp/in/"])
+        self.assertEqual(argv[:3], ["-a", "-e", "ssh -o BatchMode=yes -p 22"])
+        self.assertEqual(argv[3:], ["report.txt", "sblo@example.invalid:/tmp/in/"])
+
+
 if __name__ == "__main__":
     unittest.main()
 
