@@ -6,7 +6,13 @@ import json
 import os
 import re
 
-PROTOCOL_VERSION = 1
+# Wire versions. A node speaks versions MIN_PROTOCOL_VERSION..PROTOCOL_VERSION.
+# A link runs at the highest version both sides speak. See negotiate().
+PROTOCOL_VERSION = 2
+MIN_PROTOCOL_VERSION = 2
+# What this node can do. A node that lacks a feature (a small C node has no
+# virtual server) says so, and the other side can avoid sending it those kinds.
+FEATURES = ["core", "vs", "shell", "file"]
 MAX_LINE = 1 << 20
 DEFAULT_TTL = 16
 MAX_TTL = 64
@@ -71,6 +77,13 @@ def decode(line):
     if kind == "hello":
         _require(frame, "node", "version", "link")
         check_node(frame["node"])
+        if not isinstance(frame["version"], int):
+            raise ProtoError("bad-frame")
+        if "min_version" in frame and not isinstance(frame["min_version"], int):
+            raise ProtoError("bad-frame")
+        if "features" in frame and not (isinstance(frame["features"], list) and
+                                        all(isinstance(f, string_types) for f in frame["features"])):
+            raise ProtoError("bad-frame")
     elif kind == "bye":
         _require(frame, "reason")
     else:
@@ -90,8 +103,17 @@ def _require(frame, *keys):
             raise ProtoError("bad-frame")
 
 
-def hello(node, link):
-    return {"type": "hello", "node": node, "version": PROTOCOL_VERSION, "link": link}
+def hello(node, link, features=None):
+    return {"type": "hello", "node": node, "version": PROTOCOL_VERSION,
+            "min_version": MIN_PROTOCOL_VERSION, "link": link,
+            "features": list(FEATURES if features is None else features)}
+
+
+def negotiate(peer_version, peer_min):
+    """The wire version for a link, or None if the two ranges do not overlap."""
+    top = min(peer_version, PROTOCOL_VERSION)
+    floor = max(peer_min, MIN_PROTOCOL_VERSION)
+    return top if top >= floor else None
 
 
 def bye(reason):

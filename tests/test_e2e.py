@@ -346,6 +346,16 @@ class WatchAndRemote(unittest.TestCase):
         out, err = watcher.communicate()
         self.assertIn(b"watch-test-message", out, err)
 
+    def test_client_version_negotiation(self):
+        import socket
+        sock = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+        sock.sendall(b"MODE client\nVERSION 1\nVERSION 9\nVERSION 0\nVERSION x\n")
+        reader = sock.makefile("rb")
+        lines = [reader.readline() for _ in range(4)]
+        sock.close()
+        self.assertEqual([l.decode().strip() for l in lines],
+                         ["VERSION 1", "VERSION 1", "ERR version", "ERR version"])
+
     def recorded(self, name, args):
         """Run `remote`/`send` with a fake ssh or rsync that only writes its argv to a file."""
         log = os.path.join(self.tmp, name + ".argv")

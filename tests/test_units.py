@@ -280,3 +280,29 @@ class ExplainTest(unittest.TestCase):
     def test_unknown_codes_pass_through(self):
         from agentipc import client
         self.assertEqual(client.explain("ERR something-new"), "ERR something-new")
+
+
+class VersionTest(unittest.TestCase):
+    def test_hello_carries_versions_and_features(self):
+        frame = proto.hello("node-1", "ssh")
+        self.assertEqual(frame["version"], proto.PROTOCOL_VERSION)
+        self.assertEqual(frame["min_version"], proto.MIN_PROTOCOL_VERSION)
+        self.assertIn("core", frame["features"])
+        self.assertEqual(proto.decode(proto.encode(frame))["features"], frame["features"])
+
+    def test_negotiate_picks_the_highest_common_version(self):
+        self.assertEqual(proto.negotiate(proto.PROTOCOL_VERSION, proto.MIN_PROTOCOL_VERSION),
+                         proto.PROTOCOL_VERSION)
+        self.assertEqual(proto.negotiate(proto.PROTOCOL_VERSION + 3, proto.MIN_PROTOCOL_VERSION),
+                         proto.PROTOCOL_VERSION)
+
+    def test_negotiate_refuses_non_overlapping_ranges(self):
+        self.assertIsNone(proto.negotiate(proto.MIN_PROTOCOL_VERSION - 1, 1))
+        self.assertIsNone(proto.negotiate(proto.PROTOCOL_VERSION + 1, proto.PROTOCOL_VERSION + 1))
+
+    def test_bad_version_fields_are_rejected(self):
+        frame = proto.hello("node-1", "ssh")
+        for patch in ({"version": "2"}, {"min_version": "x"}, {"features": "core"}, {"features": [1]}):
+            bad = dict(frame, **patch)
+            with self.assertRaises(proto.ProtoError):
+                proto.decode(proto.encode(bad))

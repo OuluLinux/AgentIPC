@@ -180,3 +180,58 @@ class RequestTimeoutTest(unittest.TestCase):
         finally:
             a.stop()
             b.stop()
+
+
+class VersionNegotiationTest(unittest.TestCase):
+    """A raw peer, written by hand, to check which hello frames a node accepts."""
+
+    def setUp(self):
+        import socket
+        self.node = new_node("N")
+        self.sock, other = socket.socketpair()
+        self.rfile = other.makefile("rb")
+        self.wfile = other.makefile("wb")
+        self.node.make_link(self.sock.makefile("rb"), self.sock.makefile("wb"), "direct")
+        self.other = other
+
+    def tearDown(self):
+        self.node.stop()
+        self.other.close()
+
+    def send(self, frame):
+        import json
+        self.wfile.write((json.dumps(frame) + "\n").encode("ascii"))
+        self.wfile.flush()
+
+    def replies(self, wait=1.0):
+        import json
+        self.other.settimeout(wait)
+        lines = []
+        try:
+            while True:
+                line = self.rfile.readline()
+                if not line:
+                    break
+                lines.append(json.loads(line.decode("ascii")))
+        except Exception:
+            pass
+        return lines
+
+    def hello(self, **fields):
+        frame = {"type": "hello", "node": "PEER", "version": 2, "min_version": 2, "link": "direct",
+                 "features": ["core"]}
+        frame.update(fields)
+        return frame
+
+    def test_version_one_peer_is_refused(self):
+        self.send(self.hello(version=1, min_version=1))
+        self.assertIn({"type": "bye", "reason": "version"}, self.replies())
+
+    def test_newer_peer_with_a_compatible_range_is_accepted(self):
+        self.send(self.hello(version=5, min_version=2))
+        self.assertTrue(wait_for(lambda: self.node.links and self.node.links[0].version == 2))
+        self.assertEqual(self.node.links[0].features, ["core"])
+
+    def test_peer_whose_minimum_is_above_ours_is_refused(self):
+        self.send(self.hello(version=9, min_version=9))
+        self.assertIn({"type": "bye", "reason": "version"}, self.replies())

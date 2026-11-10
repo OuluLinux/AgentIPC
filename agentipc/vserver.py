@@ -19,6 +19,7 @@ Client protocol, one command per line. Replies are lines too:
     SENDFILE NODE NAME SIZE TOTAL SHA256 ID
                              -> (then FILECHUNK INDEX BASE64 for each chunk)
                                 FILESENT ID  or ERR REASON
+    VERSION N                -> VERSION M  (M = highest common client version; optional, default 1)
     EXEC NODE TIMEOUT CMD    -> EXECRESULT {json}  or ERR REASON
                                 (runs only where that node enables shell commands)
     QUIT                     -> BYE
@@ -41,6 +42,7 @@ except ImportError:  # Python 2
 MAX_BODY = 4096
 HISTORY_CHUNK = 50
 LOGIN_TIMEOUT = 20.0
+CLIENT_PROTOCOL_VERSION = 1
 
 
 class RecordStore(object):
@@ -275,7 +277,7 @@ class ClientSession(object):
         rest = rest.strip()
         handler = {
             "LOGIN": self._cmd_login, "PROOF": self._cmd_proof, "TOKEN": self._cmd_token,
-            "EXEC": self._cmd_exec,
+            "EXEC": self._cmd_exec, "VERSION": self._cmd_version,
             "JOIN": self._cmd_join, "PART": self._cmd_part, "SAY": self._cmd_say,
             "NAMES": self._cmd_names, "NODES": self._cmd_nodes, "QUIT": self._cmd_quit,
             "SENDFILE": self._cmd_sendfile, "FILECHUNK": self._cmd_filechunk,
@@ -403,6 +405,12 @@ class ClientSession(object):
         for user, node_id in self.vs.names(self.server, chan):
             self.out("NAME " + _json({"user": user, "node": node_id}))
         self.out("ENDNAMES #%s" % chan)
+
+    def _cmd_version(self, rest):
+        if not rest.isdigit() or int(rest) < 1:
+            self.out("ERR version")
+            return
+        self.out("VERSION %d" % min(int(rest), CLIENT_PROTOCOL_VERSION))
 
     def _cmd_nodes(self, rest):
         for row in self.node.status():

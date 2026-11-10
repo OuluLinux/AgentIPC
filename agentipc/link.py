@@ -20,6 +20,8 @@ class Link(object):
     def __init__(self, rfile, wfile, kind, on_frame, on_close, closer=None):
         self.kind = kind          # "ssh", "direct" or "local"
         self.peer = None          # neighbour node id, set after hello
+        self.version = None       # wire version negotiated at hello
+        self.features = []        # what the neighbour says it can do
         self.rfile = rfile
         self.wfile = wfile
         self.on_frame = on_frame

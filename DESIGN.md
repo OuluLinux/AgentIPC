@@ -46,9 +46,10 @@ Usernames differ between machines. Every ssh target is `USER@HOST:PORT`.
   (libsodium). PyNaCl is optional on Python 2.7. Unencrypted servers do not
   need it.
 
-## Wire protocol (version 1)
+## Wire protocol (version 2)
 
-Phase 02, task 01. Applies to ssh links and direct TCP links alike.
+Applies to ssh links and direct TCP links alike. Version history and the
+compatibility rules are in "Versioning" below.
 
 ### Framing
 
@@ -66,15 +67,23 @@ Phase 02, task 01. Applies to ssh links and direct TCP links alike.
 ### `hello`
 
 Each side sends `hello` as soon as the link opens. The link carries traffic
-only after both `hello` frames are seen and the versions match.
+only after both `hello` frames are seen and their version ranges overlap.
 
 ```json
-{"type": "hello", "node": "gentoo-planner", "version": 1, "link": "ssh"}
+{"type": "hello", "node": "gentoo-planner", "version": 2, "min_version": 2,
+ "link": "ssh", "features": ["core", "vs", "shell", "file"]}
 ```
 
 - `node`: sender's node id.
-- `version`: protocol version. A different version gets `bye` with reason `version`.
+- `version`: highest wire version the sender speaks.
+- `min_version`: lowest wire version the sender accepts. Missing means `version`.
 - `link`: `ssh` or `direct`. Informational; the receiver checks the allowlist itself.
+- `features`: what the sender can do. Informational, a list of names. `core` is
+  required; a node without a feature must not be sent packets of that kind on
+  purpose (a small node without `vs` gets no virtual-server packets).
+
+The link runs at the highest version both sides speak. If the ranges do not
+overlap, the link is closed with `bye` reason `version`.
 
 A node that receives its own node id in `hello` sends `bye` with reason
 `self-link` and closes.
@@ -87,7 +96,7 @@ Closes the link. Sent before closing, when possible.
 {"type": "bye", "reason": "version"}
 ```
 
-Reasons used in version 1: `version`, `bad-frame`, `self-link`, `not-allowed`
+Reasons used: `version`, `bad-frame`, `self-link`, `not-allowed`
 (direct link from an address not on the allowlist), `shutdown`.
 
 ### `packet` (routed envelope)
@@ -173,7 +182,7 @@ A node runs shell commands only if its config enables them:
 This lets agents use machines that cannot run agents well. An agent on a
 capable machine runs commands on the weaker one.
 
-## Planned: small C node (low priority)
+## Planned: small C node (top priority)
 
 A C node with only plain links, remote shell commands and file transfer. It is
 for hosts too old or too small for Python. Targets:
@@ -192,6 +201,40 @@ The same node code, as a library that a host program links in (for example a
 DAW such as Ardour, an image editor such as GIMP, or a browser such as
 Chromium). The host exposes a virtual shell and a virtual filesystem, so an AI
 agent can drive the program. Not designed yet.
+
+## Versioning
+
+The wire protocol and the virtual-server client protocol are both versioned.
+Nothing promises that the protocol stays the same.
+
+### Rules
+
+- **Breaking change:** anything that changes what an existing frame, field or
+  kind means, or removes one. It needs a new version number.
+- **Compatible change:** a new optional field, or a new packet kind that old
+  nodes forward and ignore. These stay in the current version. Receivers already
+  ignore unknown fields and forward unknown kinds.
+- **Negotiation:** each side announces `version` and `min_version`. The link
+  runs at `min(version_a, version_b)`, and is refused if that is below either
+  side's `min_version`.
+- **Dropping support:** a node raises its `min_version` only when it no longer
+  needs the old behaviour. Until then, old and new nodes keep talking.
+- **C node:** speaks the same versions. It implements exactly the versions it
+  advertises, and states its `features`.
+
+### Wire version history
+
+- **1:** the first wire format. Single-destination packets only. Not spoken by
+  any live node after this change.
+- **2:** `dst` may be a list of 1 to 64 distinct node ids (multicast). `hello`
+  carries `version`, `min_version` and `features`. Current.
+
+### Client protocol (virtual server line protocol)
+
+The `VERSION N` command is optional. A client that sends it gets
+`VERSION M`, where M is the highest version both sides speak. A client that
+sends nothing gets version 1 behaviour. An unsupported request gets
+`ERR version`. Current client version: 1.
 
 ## Implementation
 
@@ -241,9 +284,6 @@ so run nodes on machines where that is acceptable.
 
 ## Open points
 
-- Wire version is still 1, but multicast `dst` lists were added in the same
-  change. Nodes running the older code reject list destinations with `bad-frame`.
-  Bump `PROTOCOL_VERSION` to 2 before any mixed deployment.
 - Python 2.7 is not verified: no interpreter was available. Code avoids
   Python 3-only syntax, but it needs a real run.
 - Android app: specified (phase 06) but not built. There is no Android SDK on

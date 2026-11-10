@@ -136,7 +136,8 @@ class Node(object):
                 self._on_packet(link, frame)
 
     def _on_hello(self, link, frame):
-        if frame["version"] != proto.PROTOCOL_VERSION:
+        version = proto.negotiate(frame["version"], frame.get("min_version", frame["version"]))
+        if version is None:
             link.close("version")
             return
         if frame["node"] == self.id:
@@ -146,6 +147,8 @@ class Node(object):
             link.close("bad-frame")
             return
         link.peer = frame["node"]
+        link.version = version
+        link.features = frame.get("features", [])
         self.links.append(link)
         self._announce_now()
         # Floods are relayed only to links that exist when they arrive. Replay what we
