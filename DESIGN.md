@@ -101,10 +101,14 @@ Every routed message, in any phase, uses this envelope.
 - `id`: 16 random hex characters, unique per origin. Dedupe key is `(src, id)`.
 - `ttl`: hop limit. Default 16, maximum 64. Decremented on each forward; a
   packet with `ttl` 0 is not forwarded.
-- `kind`: what the payload means. Defined later: `ping`, `pong`, `announce`
-  (phase 03), `login-start`, `login-proof`, `token` (phase 04), `channel`,
-  `membership`, `history` (phase 05), `file` (phase 07). Unknown kinds are
-  forwarded, not handled.
+- `kind`: what the payload means. Kinds in use:
+  - routing and ping: `announce` (topology, flooded), `ping` and `pong` (to every known node)
+  - login: `login-start`, `login-challenge`, `login-proof`, `login-result`
+  - token check: `verify`, `verify-result`
+  - virtual server: `membership` (flooded join and part), `channel` (flooded message),
+    `sync` (flooded on every new link: membership plus what the sender has), `history` (directed reply)
+  - files: `file` (one chunk, directed to the receiving node)
+  Unknown kinds are forwarded, not handled.
 - `payload`: JSON object, interpreted by `kind`.
 
 Nodes forward a packet on every link except the one it arrived on, if its
@@ -126,17 +130,54 @@ two hops:
 - The dedupe cache holds recent `(src, id)` pairs. Its size and expiry are set
   in the routing phase.
 
-## Storage
+## Implementation
 
-- Channel history is stored per node in `AGENTIPC_HOME` (default `~/.agentipc`),
-  as implemented in `agentipc/store.py`. Mesh history sync adds only messages
-  the local store lacks (phase 05).
+- `agentipc/proto.py`: framing, link frames, routed packet envelope.
+- `agentipc/link.py`: one link (reader and writer threads, outgoing queue).
+- `agentipc/routing.py`: topology (link state), next hops, ping results, dedupe cache.
+- `agentipc/node.py`: links, dispatch, forwarding, announce, ping, tick loop.
+- `agentipc/daemon.py`: control socket on 127.0.0.1, direct listener with allowlist,
+  ssh and direct dialers with backoff.
+- `agentipc/auth.py`: accounts, challenge-response login, tokens, verify cache.
+- `agentipc/vserver.py`: channels on the mesh, membership, history sync, client protocol.
+- `agentipc/client.py`: client side: ssh or direct connection, login, read, say, upload.
+- `agentipc/crypto.py`: PyNaCl SecretBox, imported only for encrypted servers.
+- `agentipc/files.py`: chunked file transfer with out-of-order assembly and SHA-256.
 
-## Open decisions
+Process model: `agentipc node run` is the daemon. Remote ssh sessions run
+`agentipc bridge link` (peer links) or `agentipc bridge client` (client
+sessions), which pipe stdin and stdout to the daemon's control socket. The
+local control socket listens on 127.0.0.1 only; any local user can reach it,
+so run nodes on machines where that is acceptable.
 
-- Key distribution for encrypted virtual servers: one key per server, or per
-  channel with rekeying. The authority can read messages either way.
-- Login token verification: shared key, or a routed `verify` request to the authority.
-- Newest PyNaCl release that still supports Python 2.7.
-- Android libsodium binding, so message encryption matches across platforms.
-- Python 2.7 verification of the client (needs an interpreter).
+## Decisions taken during implementation
+
+- **Key distribution:** one key per encrypted virtual server, created by the
+  authority. At login the key is wrapped with the user's password-derived key
+  (SecretBox), so relay nodes never see it. The authority holds every key, so it
+  can read every encrypted message. Rekeying on membership change is not done.
+- **Token verification:** a node verifies a token by a routed `verify` request
+  to the authority, and caches the answer until expiry. No shared key.
+- **Tokens and encrypted servers:** a token proves identity only. An encrypted
+  server requires a password login, because the key is wrapped under the password.
+- **Login:** the password never travels. The authority sends a salt and a nonce,
+  and the client returns an HMAC. Unknown users get a stable fake salt, so login
+  does not reveal which accounts exist.
+- **Membership and history:** joins and parts are flooded. Every new link
+  triggers a flooded `sync` carrying the sender's local members and the highest
+  sequence number it holds per origin. Receivers reply with the records that the
+  sender lacks. Gaps in a sequence are not repaired.
+- **Node loss:** when a node's announcements expire, its members are removed.
+- **File transfer:** supported on plain servers only. Encrypted servers refuse it
+  for now.
+- **PyNaCl:** 1.4.0 is the last release that supports Python 2.7. Python 2.7
+  nodes and clients without PyNaCl can use plain servers, direct links and ssh.
+
+## Open points
+
+- Python 2.7 is not verified: no interpreter was available. Code avoids
+  Python 3-only syntax, but it needs a real run.
+- Android app: specified (phase 06) but not built. There is no Android SDK on
+  the development machine.
+- Encrypted file transfer.
+- Record and membership storage grows without bounds.

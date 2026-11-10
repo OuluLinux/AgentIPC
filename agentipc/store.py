@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """File-backed channel store. Python 2.7 and 3, stdlib only."""
 
-import datetime
 import json
 import os
 import re
@@ -24,7 +23,7 @@ class StoreError(Exception):
 
 
 def utcnow():
-    return datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def check_agent(name):

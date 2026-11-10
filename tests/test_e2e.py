@@ -1,0 +1,254 @@
+# -*- coding: utf-8 -*-
+"""End to end: node processes, the agentipc CLI, ssh links and direct links.
+
+ssh is replaced by a fake script on PATH. It runs the remote command locally,
+with AGENTIPC_HOME set to the target's home, which is what sshd would do.
+"""
+
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(HERE)
+sys.path.insert(0, REPO)
+
+from agentipc import auth  # noqa: E402
+
+FAKE_SSH = """#!/bin/sh
+# Test double for ssh: run the remote command locally, in the target's home.
+while [ "$1" != "" ]; do
+  case "$1" in
+    -o|-p|-i) shift 2 ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+target="$1"; shift
+name="${target%%@*}"
+export AGENTIPC_HOME="$FAKE_SSH_HOMES/$name"
+exec sh -c "$*"
+"""
+
+
+def free_port():
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
+
+
+def wait_port(port, timeout=10):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+            return True
+        except socket.error:
+            time.sleep(0.05)
+    return False
+
+
+class EndToEnd(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        cls.homes = os.path.join(cls.tmp, "homes")
+        cls.bin = os.path.join(cls.tmp, "bin")
+        os.makedirs(cls.homes)
+        os.makedirs(cls.bin)
+        with open(os.path.join(cls.bin, "ssh"), "w") as fh:
+            fh.write(FAKE_SSH)
+        os.chmod(os.path.join(cls.bin, "ssh"), 0o755)
+        with open(os.path.join(cls.bin, "agentipc"), "w") as fh:
+            fh.write('#!/bin/sh\nexec "%s" "%s/bin/agentipc" "$@"\n' % (sys.executable, REPO))
+        os.chmod(os.path.join(cls.bin, "agentipc"), 0o755)
+        cls.env = dict(os.environ)
+        cls.env["PATH"] = cls.bin + os.pathsep + os.environ["PATH"]
+        cls.env["FAKE_SSH_HOMES"] = cls.homes
+        cls.procs = []
+        cls.ports = {}
+        for name in ("AUTH", "A", "C"):
+            cls.ports[name] = free_port()
+        cls.write_config("AUTH", {"authority": "AUTH"})
+        cls.write_config("A", {"authority": "AUTH", "peers": [{"kind": "ssh", "target": "AUTH@localhost"}]})
+        cls.write_config("C", {"authority": "AUTH", "peers": [{"kind": "ssh", "target": "A@localhost"}]})
+        accounts = auth.Accounts(os.path.join(cls.homes, "AUTH", "accounts.json"))
+        accounts.add_user("alice", "alice-pw")
+        accounts.add_user("bob", "bob-pw")
+        accounts.add_server("plain", encrypted=False)
+        for name in ("AUTH", "A", "C"):
+            cls.procs.append(cls.start_node(name))
+        for name in ("AUTH", "A", "C"):
+            assert wait_port(cls.ports[name]), name
+        time.sleep(1.5)  # let the ssh links and announcements settle
+
+    @classmethod
+    def write_config(cls, name, extra):
+        import json
+        home = os.path.join(cls.homes, name)
+        os.makedirs(home)
+        cfg = {"node": name, "control_port": cls.ports[name]}
+        cfg.update(extra)
+        with open(os.path.join(home, "config.json"), "w") as fh:
+            json.dump(cfg, fh)
+
+    @classmethod
+    def start_node(cls, name):
+        env = dict(cls.env, AGENTIPC_HOME=os.path.join(cls.homes, name))
+        log = open(os.path.join(cls.tmp, name + ".log"), "ab")
+        return subprocess.Popen([sys.executable, os.path.join(REPO, "bin", "agentipc"), "node", "run"],
+                                env=env, stdout=log, stderr=log)
+
+    @classmethod
+    def tearDownClass(cls):
+        for proc in cls.procs:
+            proc.terminate()
+            proc.wait()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def vs(self, *args, **kwargs):
+        env = dict(self.env, PW="alice-pw")
+        cmd = [sys.executable, os.path.join(REPO, "bin", "agentipc"), "vs"] + list(args)
+        return subprocess.check_output(cmd, env=env, stderr=subprocess.STDOUT).decode("utf-8")
+
+    def test_message_crosses_two_ssh_links(self):
+        self.vs("--ssh", "AUTH@localhost", "--user", "alice", "--server", "plain",
+                "--password-env", "PW", "say", "general", "hello from AUTH")
+        out = self.vs("--ssh", "C@localhost", "--user", "alice", "--server", "plain",
+                      "--password-env", "PW", "read", "general")
+        self.assertIn("hello from AUTH", out)
+
+    def test_node_list_shows_the_mesh(self):
+        out = self.vs("--ssh", "C@localhost", "--user", "alice", "--server", "plain",
+                      "--password-env", "PW", "nodes")
+        self.assertIn("AUTH", out)
+        self.assertIn("A", out)
+
+    def test_wrong_password_exits_with_error(self):
+        env = dict(self.env, PW="nope")
+        proc = subprocess.Popen([sys.executable, os.path.join(REPO, "bin", "agentipc"), "vs",
+                                 "--ssh", "A@localhost", "--user", "alice", "--server", "plain",
+                                 "--password-env", "PW", "read", "general"],
+                                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        _, err = proc.communicate(timeout=20)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn(b"bad-login", err)
+
+    def test_file_crosses_the_mesh(self):
+        src = os.path.join(self.tmp, "payload.bin")
+        data = os.urandom(100 * 1024)
+        with open(src, "wb") as fh:
+            fh.write(data)
+        self.vs("--ssh", "A@localhost", "--user", "alice", "--server", "plain",
+                "--password-env", "PW", "sendfile", "AUTH", src)
+        inbox = os.path.join(self.homes, "AUTH", "inbox")
+        received = None
+        deadline = time.time() + 10
+        while time.time() < deadline and received is None:
+            for root, _, files in os.walk(inbox) if os.path.isdir(inbox) else []:
+                for name in files:
+                    if name == "payload.bin":
+                        received = os.path.join(root, name)
+            time.sleep(0.1)
+        self.assertIsNotNone(received)
+        with open(received, "rb") as fh:
+            self.assertEqual(fh.read(), data)
+
+
+class DirectLinks(unittest.TestCase):
+    """Plain TCP links: allowed from listed addresses only, and they reconnect."""
+
+    @classmethod
+    def setUpClass(cls):
+        import json
+        cls.tmp = tempfile.mkdtemp()
+        cls.homes = os.path.join(cls.tmp, "homes")
+        os.makedirs(cls.homes)
+        cls.env = dict(os.environ, FAKE_SSH_HOMES=cls.homes)
+        cls.ports = {n: free_port() for n in ("D", "G")}
+        configs = {
+            "D": {"authority": "D", "listen": cls.ports["D"], "allow": ["127.0.0.1"]},
+            "E": {"authority": "D", "peers": [{"kind": "direct", "host": "127.0.0.1", "port": cls.ports["D"]}]},
+            "G": {"authority": "G", "listen": cls.ports["G"], "allow": ["10.9.9.9"]},
+        }
+        for name, extra in configs.items():
+            home = os.path.join(cls.homes, name)
+            os.makedirs(home)
+            cfg = {"node": name, "control_port": free_port()}
+            cfg.update(extra)
+            with open(os.path.join(home, "config.json"), "w") as fh:
+                json.dump(cfg, fh)
+        accounts = auth.Accounts(os.path.join(cls.homes, "D", "accounts.json"))
+        accounts.add_user("alice", "alice-pw")
+        accounts.add_server("plain", encrypted=False)
+        accounts_g = auth.Accounts(os.path.join(cls.homes, "G", "accounts.json"))
+        accounts_g.add_user("alice", "alice-pw")
+        accounts_g.add_server("plain", encrypted=False)
+        cls.procs = {name: cls.start(name) for name in ("D", "E", "G")}
+        for name in ("D", "G"):
+            assert wait_port(cls.ports[name]), name
+        time.sleep(1.5)
+
+    @classmethod
+    def start(cls, name):
+        env = dict(cls.env, AGENTIPC_HOME=os.path.join(cls.homes, name))
+        log = open(os.path.join(cls.tmp, name + ".log"), "ab")
+        return subprocess.Popen([sys.executable, os.path.join(REPO, "bin", "agentipc"), "node", "run"],
+                                env=env, stdout=log, stderr=log)
+
+    @classmethod
+    def tearDownClass(cls):
+        for proc in cls.procs.values():
+            if proc.poll() is None:
+                proc.terminate()
+                proc.wait()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def direct_nodes(self, port):
+        env = dict(self.env, PW="alice-pw")
+        cmd = [sys.executable, os.path.join(REPO, "bin", "agentipc"), "vs", "--direct",
+               "127.0.0.1:%d" % port, "--user", "alice", "--server", "plain",
+               "--password-env", "PW", "nodes"]
+        return subprocess.check_output(cmd, env=env, stderr=subprocess.STDOUT).decode("utf-8")
+
+    def test_listed_address_links_directly(self):
+        self.assertTrue(wait_for_text(lambda: self.direct_nodes(self.ports["D"]), "E\tup"))
+
+    def test_unlisted_address_is_refused(self):
+        env = dict(self.env, PW="alice-pw")
+        proc = subprocess.Popen([sys.executable, os.path.join(REPO, "bin", "agentipc"), "vs", "--direct",
+                                 "127.0.0.1:%d" % self.ports["G"], "--user", "alice", "--server", "plain",
+                                 "--password-env", "PW", "nodes"],
+                                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        _, err = proc.communicate(timeout=20)
+        self.assertNotEqual(proc.returncode, 0)
+
+    def test_direct_link_reconnects_after_the_node_restarts(self):
+        self.procs["D"].terminate()
+        self.procs["D"].wait()
+        self.procs["D"] = self.start("D")
+        self.assertTrue(wait_port(self.ports["D"]))
+        self.assertTrue(wait_for_text(lambda: self.direct_nodes(self.ports["D"]), "E\tup", timeout=30))
+
+
+def wait_for_text(fn, needle, timeout=15):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            if needle in fn():
+                return True
+        except subprocess.CalledProcessError:
+            pass
+        time.sleep(0.3)
+    return False
+
+
+if __name__ == "__main__":
+    unittest.main()
