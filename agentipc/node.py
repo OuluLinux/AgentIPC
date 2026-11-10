@@ -72,18 +72,18 @@ class Node(object):
     # ----- sending -----------------------------------------------------
 
     def send(self, dst, kind, payload):
-        """Originate a packet. Returns False if no route exists."""
+        """Originate a packet to a node, a list of nodes, or FLOOD.
+
+        Returns False if no addressed node could be routed."""
         pkt = proto.packet(self.id, dst, kind, payload)
         with self.lock:
-            self.seen.add((self.id, pkt["id"]))
-            if dst == self.id:
-                self._dispatch(pkt)
-                return True
             if dst == proto.FLOOD:
+                self.seen.add((self.id, pkt["id"], proto.FLOOD))
                 self._dispatch(pkt)
                 self._flood(pkt, None)
                 return True
-            return self._route(pkt)
+            targets = [d for d in proto.destinations(dst) if self.seen.add((self.id, pkt["id"], d))]
+            return self._forward(pkt, targets, None)
 
     def request(self, dst, kind, payload, callback):
         """Send a packet whose reply is handed to callback(payload) by resolve()."""
@@ -147,18 +147,24 @@ class Node(object):
                 self._announce_now()
 
     def _on_packet(self, link, pkt):
-        if not self.seen.add((pkt["src"], pkt["id"])):
-            return
         dst = pkt["dst"]
-        if dst in (self.id, proto.FLOOD):
-            self._dispatch(pkt)
-        if dst == self.id or pkt["ttl"] <= 1:
-            return
-        out = dict(pkt, ttl=pkt["ttl"] - 1)
         if dst == proto.FLOOD:
-            self._flood(out, link)
-        else:
-            self._route(out)
+            if not self.seen.add((pkt["src"], pkt["id"], proto.FLOOD)):
+                return
+            self._dispatch(pkt)
+            if pkt["ttl"] > 1:
+                self._flood(dict(pkt, ttl=pkt["ttl"] - 1), link)
+            return
+        # Dedupe per destination: a copy that repeats a destination already handled
+        # is dropped for that destination only. The others in the same packet still go on.
+        targets = [d for d in proto.destinations(dst) if self.seen.add((pkt["src"], pkt["id"], d))]
+        if not targets:
+            return
+        if pkt["ttl"] <= 1:
+            if self.id in targets:
+                self._dispatch(pkt)
+            return
+        self._forward(dict(pkt, ttl=pkt["ttl"] - 1), targets, link)
 
     def _dispatch(self, pkt):
         handler = self.handlers.get(pkt["kind"])
@@ -171,12 +177,25 @@ class Node(object):
 
     # ----- forwarding --------------------------------------------------
 
-    def _route(self, pkt):
-        link = self._link_to(self.topology.next_hop(pkt["dst"]))
-        if link is None:
-            return False
-        link.send(pkt)
-        return True
+    def _forward(self, pkt, targets, arrived_from):
+        """Deliver here if addressed here, and send one copy per outgoing link.
+
+        Each copy carries only the destinations routed through its link, so a
+        link shared by several destinations carries the packet once.
+        Returns False if no remote target could be routed and none is local."""
+        if self.id in targets:
+            self._dispatch(pkt)
+        groups = {}
+        for name in targets:
+            if name == self.id:
+                continue
+            link = self._link_to(self.topology.next_hop(name))
+            if link is None or link is arrived_from:
+                continue
+            groups.setdefault(link, []).append(name)
+        for link, names in groups.items():
+            link.send(dict(pkt, dst=names if isinstance(pkt["dst"], list) else names[0]))
+        return self.id in targets or bool(groups)
 
     def _flood(self, pkt, exclude):
         for link in list(self.links):
@@ -240,8 +259,9 @@ class Node(object):
                     self._announce_now()
                     last_announce = now
                 if now - last_ping >= self.ping_interval:
-                    for name in self.topology.nodes():
-                        self.send(name, "ping", {"t": now})
+                    names = self.topology.nodes()
+                    for start in range(0, len(names), proto.MAX_MULTICAST):
+                        self.send(names[start:start + proto.MAX_MULTICAST], "ping", {"t": now})
                     last_ping = now
                 for origin in self.topology.expire(now, self.node_timeout):
                     for service in self.services:

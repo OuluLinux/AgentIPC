@@ -81,3 +81,70 @@ class RoutingTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MulticastTest(unittest.TestCase):
+    """One packet per shared link, delivered once to each destination."""
+
+    def setUp(self):
+        self.nodes = []
+
+    def tearDown(self):
+        for node in self.nodes:
+            node.stop()
+
+    def node(self, name):
+        node = new_node(name)
+        self.nodes.append(node)
+        return node
+
+    def count_frames(self, link, kind):
+        """Wrap a link's send so every packet of this kind leaving on it is counted."""
+        sent = []
+        original = link.send
+
+        def send(frame):
+            if frame.get("type") == "packet" and frame["kind"] == kind:
+                sent.append(frame)
+            original(frame)
+
+        link.send = send
+        return sent
+
+    def test_shared_link_carries_one_packet_for_two_destinations(self):
+        a, b, c, d = self.node("A"), self.node("B"), self.node("C"), self.node("D")
+        got = {"C": [], "D": []}
+        c.register("multi", lambda p: got["C"].append(p["payload"]))
+        d.register("multi", lambda p: got["D"].append(p["payload"]))
+        ab, _ = connect(a, b)
+        connect(b, c)
+        connect(b, d)
+        self.assertTrue(wait_for(lambda: a.topology.next_hop("C") == "B" and a.topology.next_hop("D") == "B"))
+        frames = self.count_frames(ab, "multi")
+        self.assertTrue(a.send(["C", "D"], "multi", {"n": 1}))
+        self.assertTrue(wait_for(lambda: got["C"] and got["D"]))
+        time.sleep(0.2)
+        self.assertEqual(len(frames), 1)
+        self.assertEqual(sorted(frames[0]["dst"]), ["C", "D"])
+        self.assertEqual(got, {"C": [{"n": 1}], "D": [{"n": 1}]})
+
+    def test_destination_reached_by_two_paths_is_delivered_once(self):
+        a, b, c, d = self.node("A"), self.node("B"), self.node("C"), self.node("D")
+        got = []
+        d.register("multi", lambda p: got.append(p["payload"]))
+        b.register("multi", lambda p: got.append(("B", p["payload"])))
+        connect(a, b)
+        connect(a, c)
+        connect(b, d)
+        connect(c, d)
+        self.assertTrue(wait_for(lambda: a.topology.next_hop("D") is not None))
+        self.assertTrue(a.send(["B", "D"], "multi", {"n": 2}))
+        self.assertTrue(wait_for(lambda: len(got) >= 2))
+        time.sleep(0.3)
+        self.assertEqual(sorted(got, key=repr), sorted([{"n": 2}, ("B", {"n": 2})], key=repr))
+
+    def test_ping_round_reaches_every_node(self):
+        a, b, c = self.node("A"), self.node("B"), self.node("C")
+        connect(a, b)
+        connect(b, c)
+        self.assertTrue(wait_for(lambda: "B" in a.pings.last and "C" in a.pings.last))

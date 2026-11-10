@@ -10,6 +10,7 @@ PROTOCOL_VERSION = 1
 MAX_LINE = 1 << 20
 DEFAULT_TTL = 16
 MAX_TTL = 64
+MAX_MULTICAST = 64
 FLOOD = "*"
 NODE_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 FRAME_TYPES = ("hello", "bye", "packet")
@@ -35,6 +36,23 @@ def check_node(name):
     return name
 
 
+def check_dst(dst):
+    """dst is FLOOD, one node id, or a list of 1..MAX_MULTICAST distinct node ids."""
+    if isinstance(dst, list):
+        for name in dst:
+            check_node(name)
+        if not 1 <= len(dst) <= MAX_MULTICAST or len(set(dst)) != len(dst):
+            raise ProtoError("bad-frame")
+    elif dst != FLOOD:
+        check_node(dst)
+    return dst
+
+
+def destinations(dst):
+    """The node ids a packet is addressed to. FLOOD is not a node id; callers check for it first."""
+    return list(dst) if isinstance(dst, list) else [dst]
+
+
 def encode(frame):
     return (json.dumps(frame, sort_keys=True) + "\n").encode("ascii")
 
@@ -58,8 +76,7 @@ def decode(line):
     else:
         _require(frame, "src", "dst", "id", "ttl", "kind", "payload")
         check_node(frame["src"])
-        if frame["dst"] != FLOOD:
-            check_node(frame["dst"])
+        check_dst(frame["dst"])
         if not isinstance(frame["ttl"], int) or not 1 <= frame["ttl"] <= MAX_TTL:
             raise ProtoError("bad-frame")
         if not isinstance(frame["payload"], dict) or not isinstance(frame["kind"], string_types):

@@ -33,6 +33,14 @@ class ProtoTest(unittest.TestCase):
             with self.assertRaises(proto.ProtoError):
                 proto.decode(line)
 
+    def test_multicast_destinations_are_validated(self):
+        proto.decode(proto.encode(proto.packet("A", ["B", "C"], "x", {})))
+        proto.decode(proto.encode(proto.packet("A", ["B"], "x", {})))
+        bad = [[], ["B", "B"], ["B", "*"], ["B", 3], ["B bad"], ["x"] * 65]
+        for dst in bad:
+            with self.assertRaises(proto.ProtoError):
+                proto.decode(proto.encode(proto.packet("A", dst, "x", {})))
+
     def test_oversized_line_is_rejected(self):
         with self.assertRaises(proto.ProtoError):
             proto.decode(b"{" + b"x" * (proto.MAX_LINE + 1))
