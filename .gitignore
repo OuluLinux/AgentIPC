@@ -5,3 +5,8 @@ __pycache__/
 
 # Local planning documents: never committed, at any depth
 **/plan/
+
+# C node build products
+cnode/*.o
+cnode/cnode
+cnode/test_json

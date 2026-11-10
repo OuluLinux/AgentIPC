@@ -7,7 +7,7 @@ done, and known gaps. [DESIGN.md](DESIGN.md) describes the design.
 
 ## Priorities
 
-1. Small C node (phase 11). Plain links, remote shell, file transfer. Must speak the versioned protocol (DESIGN.md, "Versioning").
+1. Small C node (phase 11). Handshake done in `cnode/` (see `cnode/README.md`): versioned hello, refusals, tests. Still to do: packets and routing, keeping the link open, virtual server, shell, file transfer, direct TCP, and a live test against a Python node. Plain links, remote shell, file transfer. Must speak the versioned protocol (DESIGN.md, "Versioning").
 2. Android app (phase 06). Sketch only; needs C-node-level work to be useful on the same mesh.
 3. Python 2.7 verification. **Postponed** until a Python 2.7 system is available (Gentoo py2.7 setup is hard).
 4. Link encryption (phase 10), then obfuscated HTTP/HTTPS (note only).
