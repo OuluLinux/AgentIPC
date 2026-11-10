@@ -51,16 +51,22 @@ class Topology(object):
         """Every other node known to the topology."""
         return sorted((set(self.graph) | set(self.routes)) - set([self.me]))
 
+    def _linked(self, a, b):
+        """An edge counts only when both ends announce it. A one-sided claim is usually
+        a stale announcement from a node whose link has gone."""
+        return b in self.graph.get(a, ()) and a in self.graph.get(b, ())
+
     def _recompute(self):
         routes = {}
         queue = deque()
         for peer in sorted(self.graph.get(self.me, ())):
-            routes[peer] = peer
-            queue.append(peer)
+            if self._linked(self.me, peer):
+                routes[peer] = peer
+                queue.append(peer)
         while queue:
             node = queue.popleft()
             for nxt in sorted(self.graph.get(node, ())):
-                if nxt != self.me and nxt not in routes:
+                if nxt != self.me and nxt not in routes and self._linked(node, nxt):
                     routes[nxt] = routes[node]
                     queue.append(nxt)
         self.routes = routes

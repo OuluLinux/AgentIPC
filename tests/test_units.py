@@ -65,6 +65,15 @@ class TopologyTest(unittest.TestCase):
         self.assertFalse(t.update("B", 4, ["A", "C"], time.time()))
         self.assertIsNone(t.next_hop("C"))
 
+    def test_one_sided_claim_is_not_a_route(self):
+        t = Topology("A")
+        t.set_own(["B"])
+        t.update("B", 1, ["A"], time.time())
+        t.update("C", 1, ["B"], time.time())   # C says it links to B; B does not say so back
+        self.assertIsNone(t.next_hop("C"))
+        t.update("B", 2, ["A", "C"], time.time())
+        self.assertEqual(t.next_hop("C"), "B")
+
     def test_expired_origin_is_forgotten(self):
         t = Topology("A")
         t.set_own(["B"])

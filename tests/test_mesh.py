@@ -83,6 +83,22 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ConvergenceTest(unittest.TestCase):
+    def test_new_link_learns_the_whole_topology_without_waiting_for_an_announce(self):
+        # Default timers: periodic announces every 30 s, so anything learned here comes
+        # from the link-up replay. A node that linked earlier must pass its neighbours on.
+        a, b, c = new_node("A", fast=False), new_node("B", fast=False), new_node("C", fast=False)
+        try:
+            connect(c, a)
+            self.assertTrue(wait_for(lambda: c.topology.next_hop("A") == "A"))
+            connect(a, b)
+            self.assertTrue(wait_for(lambda: b.topology.next_hop("C") == "A", timeout=3))
+            self.assertTrue(wait_for(lambda: c.topology.next_hop("B") == "A", timeout=3))
+        finally:
+            for node in (a, b, c):
+                node.stop()
+
+
 class MulticastTest(unittest.TestCase):
     """One packet per shared link, delivered once to each destination."""
 

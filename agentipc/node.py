@@ -27,6 +27,7 @@ class Node(object):
         self.handlers = {}        # packet kind -> fn(packet)
         self.requests = {}        # request id -> callback(payload)
         self.deadlines = {}       # request id -> time after which it fails with "timeout"
+        self.announces = {}       # origin -> its latest accepted announce packet, replayed to new links
         self.services = []        # objects with on_link_up(link) and on_node_gone(node)
         self.oseq = 0             # sequence for records originated here
         self.ping_interval = 10.0
@@ -142,6 +143,11 @@ class Node(object):
         link.peer = frame["node"]
         self.links.append(link)
         self._announce_now()
+        # Floods are relayed only to links that exist when they arrive. Replay what we
+        # know, so a new neighbour does not wait for the next periodic announce.
+        for pkt in self.announces.values():
+            if pkt["ttl"] > 1:
+                link.send(dict(pkt, ttl=pkt["ttl"] - 1))
         for service in self.services:
             service.on_link_up(link)
 
@@ -235,7 +241,8 @@ class Node(object):
             return
         for name in links:
             proto.check_node(name)
-        self.topology.update(pkt["src"], seq, links, time.time())
+        if self.topology.update(pkt["src"], seq, links, time.time()):
+            self.announces[pkt["src"]] = pkt
 
     def _h_ping(self, pkt):
         self.send(pkt["src"], "pong", {"t": pkt["payload"].get("t")})
@@ -271,6 +278,7 @@ class Node(object):
                         self.send(names[start:start + proto.MAX_MULTICAST], "ping", {"t": now})
                     last_ping = now
                 for origin in self.topology.expire(now, self.node_timeout):
+                    self.announces.pop(origin, None)
                     for service in self.services:
                         service.on_node_gone(origin)
             self._expire_requests(now)
