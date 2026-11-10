@@ -167,6 +167,13 @@ def print_members(key, members):
 # ----- node, bridge and accounts (phases 02-05) -------------------------
 
 def cmd_node_run(args, ctx):
+    # Flags override the config file, so one machine can run several instances.
+    if args.node:
+        ctx.cfg["node"] = args.node
+    if args.control_port is not None:
+        ctx.cfg["control_port"] = args.control_port
+    if args.listen is not None:
+        ctx.cfg["listen"] = args.listen
     daemon = Daemon(node_id(ctx.cfg), ctx.cfg, ctx.home)
     daemon.start()
     print("node %s running (control 127.0.0.1:%d)" % (daemon.node.id, daemon.control_port))
@@ -214,9 +221,14 @@ def cmd_account(args, ctx):
     if args.action == "add":
         if not args.user:
             raise StoreError("usage: agentipc account add USER")
-        password = getpass.getpass("password for %s: " % args.user)
-        if password != getpass.getpass("repeat: "):
-            raise StoreError("passwords differ")
+        if args.password_env:
+            password = os.environ.get(args.password_env)
+            if password is None:
+                raise StoreError("%s is not set" % args.password_env)
+        else:
+            password = getpass.getpass("password for %s: " % args.user)
+            if password != getpass.getpass("repeat: "):
+                raise StoreError("passwords differ")
         if not password:
             raise StoreError("empty password")
         accounts.add_user(args.user, password)
@@ -358,6 +370,7 @@ def build_parser():
         epilog="New agent? Run: agentipc --tutorial",
     )
     p.add_argument("--tutorial", action="store_true", help="print the getting-started guide")
+    p.add_argument("--home", help="data directory for this instance (default: $AGENTIPC_HOME or ~/.agentipc)")
     sub = p.add_subparsers(dest="cmd")
 
     def agent_opt(sp):
@@ -405,6 +418,9 @@ def build_parser():
 
     sp = sub.add_parser("node", help="run this machine's mesh node")
     sp.add_argument("action", choices=["run"])
+    sp.add_argument("--node", help="node id (default: config)")
+    sp.add_argument("--control-port", type=int, help="local control port (default: config or 7421)")
+    sp.add_argument("--listen", type=int, help="direct TCP port (needs an allow list in config)")
     sp.set_defaults(func=cmd_node_run)
 
     sp = sub.add_parser("bridge", help="pipe ssh stdio to the local node (run by ssh)")
@@ -414,6 +430,7 @@ def build_parser():
     sp = sub.add_parser("account", help="manage accounts on the authority node")
     sp.add_argument("action", choices=["add", "remove", "list"])
     sp.add_argument("user", nargs="?")
+    sp.add_argument("--password-env", help="read the password from this environment variable")
     sp.set_defaults(func=cmd_account)
 
     sp = sub.add_parser("server", help="manage virtual servers on the authority node")
@@ -479,7 +496,7 @@ def main(argv=None):
     if not args.cmd:
         parser.print_help()
         return 0
-    home_dir = config_mod.home()
+    home_dir = config_mod.home(args.home)
     ctx = _Context(home_dir, config_mod.load(home_dir))
     try:
         return args.func(args, ctx) or 0

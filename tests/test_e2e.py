@@ -5,6 +5,7 @@ ssh is replaced by a fake script on PATH. It runs the remote command locally,
 with AGENTIPC_HOME set to the target's home, which is what sshd would do.
 """
 
+import json
 import os
 import shutil
 import socket
@@ -278,3 +279,65 @@ def wait_for_text(fn, needle, timeout=15):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Instances(unittest.TestCase):
+    """Two instances on one machine: separate homes and ports, linked over direct TCP."""
+
+    @classmethod
+    def setUpClass(cls):
+        import json
+        cls.tmp = tempfile.mkdtemp()
+        cls.env = dict(os.environ, PW="123")
+        cls.homes = {n: os.path.join(cls.tmp, n) for n in ("one", "two")}
+        cls.ports = {n: free_port() for n in ("one-control", "one-listen", "two-control", "two-listen")}
+        for name in cls.homes:
+            os.makedirs(cls.homes[name])
+        with open(os.path.join(cls.homes["one"], "config.json"), "w") as fh:
+            json.dump({"authority": "one", "allow": ["127.0.0.1"]}, fh)
+        with open(os.path.join(cls.homes["two"], "config.json"), "w") as fh:
+            json.dump({"authority": "one", "allow": ["127.0.0.1"],
+                       "peers": [{"kind": "direct", "host": "127.0.0.1", "port": cls.ports["one-listen"]}]}, fh)
+        cls.cli("--home", cls.homes["one"], "account", "add", "user", "--password-env", "PW")
+        cls.cli("--home", cls.homes["one"], "server", "create", "plain")
+        cls.procs = [
+            cls.start("one", "one", cls.ports["one-control"], cls.ports["one-listen"]),
+            cls.start("two", "two", cls.ports["two-control"], cls.ports["two-listen"]),
+        ]
+        assert wait_port(cls.ports["one-listen"]) and wait_port(cls.ports["two-listen"])
+        time.sleep(1.5)
+
+    @classmethod
+    def cli(cls, *args):
+        return subprocess.check_output([sys.executable, os.path.join(REPO, "bin", "agentipc")] + list(args),
+                                       env=cls.env, stderr=subprocess.STDOUT).decode("utf-8")
+
+    @classmethod
+    def start(cls, home_name, node, control, listen):
+        log = open(os.path.join(cls.tmp, home_name + ".log"), "ab")
+        return subprocess.Popen([sys.executable, os.path.join(REPO, "bin", "agentipc"),
+                                 "--home", cls.homes[home_name], "node", "run", "--node", node,
+                                 "--control-port", str(control), "--listen", str(listen)],
+                                env=cls.env, stdout=log, stderr=log)
+
+    @classmethod
+    def tearDownClass(cls):
+        for proc in cls.procs:
+            proc.terminate()
+            proc.wait()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def vs_direct(self, port, *args):
+        return subprocess.check_output(
+            [sys.executable, os.path.join(REPO, "bin", "agentipc"), "vs", "--direct", "127.0.0.1:%d" % port,
+             "--user", "user", "--server", "plain", "--password-env", "PW"] + list(args),
+            env=self.env, stderr=subprocess.STDOUT).decode("utf-8")
+
+    def test_homes_are_separate(self):
+        self.assertTrue(os.path.exists(os.path.join(self.homes["one"], "accounts.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.homes["two"], "accounts.json")))
+
+    def test_message_crosses_between_instances(self):
+        self.assertIn("posted", self.vs_direct(self.ports["one-listen"], "say", "general", "hello two"))
+        self.assertTrue(wait_for_text(lambda: self.vs_direct(self.ports["two-listen"], "read", "general"),
+                                      "hello two", timeout=20))

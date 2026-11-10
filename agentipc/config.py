@@ -7,8 +7,9 @@ import os
 DEFAULT_AUTO_JOIN = ["announcements"]
 
 
-def home():
-    return os.environ.get("AGENTIPC_HOME") or os.path.join(os.path.expanduser("~"), ".agentipc")
+def home(override=None):
+    """The data directory: --home, else $AGENTIPC_HOME, else ~/.agentipc. One directory per instance."""
+    return override or os.environ.get("AGENTIPC_HOME") or os.path.join(os.path.expanduser("~"), ".agentipc")
 
 
 def load(home_dir):
