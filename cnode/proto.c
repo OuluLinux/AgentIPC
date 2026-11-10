@@ -42,7 +42,7 @@ static int get_int(const jval *v, long *out)
     return 1;
 }
 
-const char *cn_check_hello(const jval *frame, const char *self, int *version, const char **peer)
+const char *cn_check_hello(const jval *frame, const char *self, int *version, char *peer)
 {
     const jval *type, *node, *ver, *min, *link, *features;
     long peer_version, peer_min = 0;
@@ -93,8 +93,85 @@ const char *cn_check_hello(const jval *frame, const char *self, int *version, co
     if (strcmp(node->str, self) == 0) {
         return CN_SELF_LINK;
     }
-    *peer = node->str;
+    strcpy(peer, node->str);
     return NULL;
+}
+
+/* A destination that is a node id, a list of 1..64 distinct node ids, or "*". */
+static int valid_dst(const jval *dst)
+{
+    size_t i, j;
+    if (dst == NULL) {
+        return 0;
+    }
+    if (dst->type == J_STR) {
+        return strcmp(dst->str, "*") == 0 || cn_valid_node(dst->str);
+    }
+    if (dst->type != J_ARR || dst->n < 1 || dst->n > CN_MAX_MULTICAST) {
+        return 0;
+    }
+    for (i = 0; i < dst->n; i++) {
+        if (dst->items[i]->type != J_STR || !cn_valid_node(dst->items[i]->str)) {
+            return 0;
+        }
+        for (j = 0; j < i; j++) {
+            if (strcmp(dst->items[j]->str, dst->items[i]->str) == 0) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+const char *cn_check_packet(const jval *frame)
+{
+    const jval *src, *id, *ttl, *kind, *payload;
+    long hops;
+
+    src = json_get(frame, "src");
+    if (src == NULL || src->type != J_STR || !cn_valid_node(src->str)) {
+        return CN_BAD_FRAME;
+    }
+    if (!valid_dst(json_get(frame, "dst"))) {
+        return CN_BAD_FRAME;
+    }
+    id = json_get(frame, "id");
+    if (id == NULL || id->type != J_STR) {
+        return CN_BAD_FRAME;
+    }
+    ttl = json_get(frame, "ttl");
+    if (!get_int(ttl, &hops) || hops < 1 || hops > CN_MAX_TTL) {
+        return CN_BAD_FRAME;
+    }
+    kind = json_get(frame, "kind");
+    if (kind == NULL || kind->type != J_STR) {
+        return CN_BAD_FRAME;
+    }
+    payload = json_get(frame, "payload");
+    if (payload == NULL || payload->type != J_OBJ) {
+        return CN_BAD_FRAME;
+    }
+    return NULL;
+}
+
+int cn_dst_includes(const jval *dst, const char *name)
+{
+    size_t i;
+    if (dst == NULL) {
+        return 0;
+    }
+    if (dst->type == J_STR) {
+        return strcmp(dst->str, name) == 0;
+    }
+    if (dst->type != J_ARR) {
+        return 0;
+    }
+    for (i = 0; i < dst->n; i++) {
+        if (dst->items[i]->type == J_STR && strcmp(dst->items[i]->str, name) == 0) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 char *cn_hello_line(const char *node, const char *link)

@@ -8,30 +8,45 @@ It speaks the same wire protocol as `agentipc/` (see `DESIGN.md`, "Versioning").
     make -C cnode            # cc -std=c89 -pedantic -Wall -Wextra
     make -C cnode check      # JSON reader tests
 
-## Run (so far)
+## Run
 
-    cnode/cnode --stdio --node NAME [--link ssh|direct]
+    cnode/cnode --stdio --node NAME [--link ssh|direct] [--announce-interval SECONDS]
 
 The link runs over stdin and stdout, which is what `ssh host cnode --stdio`
 gives. The node sends its `hello`, reads the peer's, and checks the version
 ranges, the node id and the frame shape. A refused link gets a `bye` with the
-reason and exit code 2. A good handshake exits 0 with `linked to PEER at
-version N` on stderr.
+reason and exit code 2. A good handshake logs `linked to PEER at version N`
+on stderr.
+
+After the handshake the node is a leaf: it has one link and does no routing.
+- Announces itself when the link comes up, and again when a ping arrives and
+  the announce interval (default 30 s, as in `node.py`) has passed.
+- Answers `ping` packets addressed to it (alone or in a list) with `pong`.
+- Ignores packets not addressed to it, and floods, since a leaf does not relay.
+- A `bye` from the peer, or the peer closing, ends the node with exit 0.
+  A malformed packet gets a `bye bad-frame` and exit 2.
 
 ## Done
 
 - JSON reader for wire frames (`json.c`), with tests.
-- Hello frame: version and `min_version` negotiation, `features`, self-link check,
-  bad-frame checks on every field. Same reasons as the Python node.
-- Tests in `tests/test_cnode.py` drive the binary with frames built by the
-  Python `proto` module, and check that the C node's hello decodes in Python.
+- Hello: version and `min_version` negotiation, `features`, self-link check,
+  and bad-frame checks on every field. Same reasons as the Python node.
+- Leaf: link stays open, announces, answers pings, packet checks.
+- Tests in `tests/test_cnode.py`:
+  - handshake cases, driven with frames built by the Python `proto` module;
+  - leaf behaviour, including refusals;
+  - a live test: a real Python node links to the C binary through a fake ssh,
+    and sees it alive.
 
 ## Not done yet
 
-- Keeping the link open after the handshake. The node exits once the hello
-  is checked.
-- Packets, forwarding, announces and routing.
+- Packet forwarding and routing. The node is a leaf only, so it must have one
+  neighbour, and Python routing will not send traffic through it.
+- Duplicate suppression. A leaf sees each flood once from its neighbour, so it
+  does not keep a list of seen packets yet.
+- Feature checks. The node states `features: ["core"]`. Python does not yet
+  check features before sending a kind (for example `exec` to a node without
+  `shell`).
 - Virtual server, shell, file transfer.
-- Direct TCP listening.
-- Testing against a live Python node over ssh.
-- Retro targets (Python 2.7 is not involved here; the C targets are separate).
+- Direct TCP listening (`--link direct` is only the name in the hello).
+- Retro targets. Each one needs its own build and test run.

@@ -2,8 +2,11 @@
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
+import tempfile
+import time
 import unittest
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -15,14 +18,29 @@ CNODE_DIR = os.path.join(REPO, "cnode")
 BINARY = os.path.join(CNODE_DIR, "cnode")
 
 
-def run_cnode(lines, node="cnode-1"):
+def free_port():
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
+
+
+def run_cnode(lines, node="cnode-1", extra=()):
     """Feeds frame lines to the C node on stdin. Returns (exit code, frames out, stderr)."""
     data = "".join(lines).encode("ascii")
-    p = subprocess.Popen([BINARY, "--stdio", "--node", node], stdin=subprocess.PIPE,
+    p = subprocess.Popen([BINARY, "--stdio", "--node", node] + list(extra), stdin=subprocess.PIPE,
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     out, err = p.communicate(data, timeout=10)
     frames = [json.loads(line) for line in out.decode("ascii").splitlines() if line]
     return p.returncode, frames, err.decode("ascii")
+
+
+def packet(dst, kind="ping", payload=None, src="py-peer", **changes):
+    """A packet line built by the Python module, with fields overridden."""
+    f = proto.packet(src, dst, kind, {"t": 12.5} if payload is None else payload)
+    f.update(changes)
+    return json.dumps(f) + "\n"
 
 
 def frame(**changes):
@@ -103,6 +121,146 @@ class HandshakeTest(unittest.TestCase):
             with self.assertRaises(proto.ProtoError):
                 line = json.dumps({"type": "hello", "node": name, "version": 2, "link": "ssh"}) + "\n"
                 proto.decode(line.encode("ascii"))
+
+
+@unittest.skipUnless(shutil.which("make") and (shutil.which("cc") or shutil.which("gcc")),
+                     "needs make and a C compiler")
+class LeafTest(unittest.TestCase):
+    """After the handshake the node stays open: it announces and answers pings."""
+
+    @classmethod
+    def setUpClass(cls):
+        subprocess.check_call(["make", "-s", "-C", CNODE_DIR, "cnode"])
+
+    def kinds(self, frames):
+        return [f.get("kind", f.get("type")) for f in frames]
+
+    def test_announces_itself_on_link_up(self):
+        code, frames, err = run_cnode([frame()])
+        self.assertEqual(code, 0, err)
+        announce = frames[1]
+        self.assertEqual(announce["kind"], "announce")
+        self.assertEqual(announce["src"], "cnode-1")
+        self.assertEqual(announce["dst"], "*")
+        self.assertEqual(announce["payload"]["links"], ["py-peer"])
+        self.assertIsInstance(announce["payload"]["seq"], int)
+        self.assertGreater(announce["payload"]["seq"], 0)
+
+    def test_ping_to_self_gets_a_pong_with_the_same_t(self):
+        code, frames, err = run_cnode([frame(), packet("cnode-1", payload={"t": 12.5})])
+        self.assertEqual(code, 0, err)
+        pong = frames[-1]
+        self.assertEqual(pong["kind"], "pong")
+        self.assertEqual(pong["src"], "cnode-1")
+        self.assertEqual(pong["dst"], "py-peer")
+        self.assertEqual(pong["payload"], {"t": 12.5})
+        # The reply must decode as a valid packet in Python.
+        proto.decode((json.dumps(pong) + "\n").encode("ascii"))
+
+    def test_ping_in_a_multicast_list_is_answered(self):
+        code, frames, _ = run_cnode([frame(), packet(["other", "cnode-1"])])
+        self.assertEqual(self.kinds(frames)[-1], "pong")
+
+    def test_ping_for_another_node_is_not_answered(self):
+        code, frames, _ = run_cnode([frame(), packet("other")])
+        self.assertEqual(code, 0)
+        self.assertEqual(self.kinds(frames), ["hello", "announce"])
+
+    def test_flood_is_not_answered(self):
+        code, frames, _ = run_cnode([frame(), packet("*")])
+        self.assertEqual(self.kinds(frames), ["hello", "announce"])
+
+    def test_missing_or_bad_t_becomes_null(self):
+        code, frames, _ = run_cnode([frame(), packet("cnode-1", payload={})])
+        self.assertIsNone(frames[-1]["payload"]["t"])
+
+    def test_announce_interval_zero_announces_on_every_ping(self):
+        code, frames, _ = run_cnode([frame(), packet("cnode-1")], extra=["--announce-interval", "0"])
+        self.assertEqual(self.kinds(frames), ["hello", "announce", "announce", "pong"])
+
+    def test_bye_from_peer_closes_cleanly(self):
+        code, frames, err = run_cnode([frame(), '{"type": "bye", "reason": "x"}\n', packet("cnode-1")])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.kinds(frames), ["hello", "announce"])
+
+    def test_bad_packet_is_refused(self):
+        for bad in (packet("cnode-1", ttl=0), packet("cnode-1", ttl=65), packet("bad node!"),
+                    packet("cnode-1", src="bad node!"), packet("cnode-1", payload=[1]),
+                    packet(["a", "a"]), packet([]), packet("cnode-1", id=5)):
+            code, frames, _ = run_cnode([frame(), bad])
+            self.assertEqual(code, 2, bad)
+            self.assertEqual(frames[-1], {"type": "bye", "reason": "bad-frame"}, bad)
+
+    def test_second_hello_and_unknown_frame_are_refused(self):
+        for bad in (frame(), '{"type": "nope"}\n', "not json\n"):
+            code, frames, _ = run_cnode([frame(), bad])
+            self.assertEqual(code, 2, bad)
+            self.assertEqual(frames[-1]["reason"], "bad-frame")
+
+    def test_peer_closing_after_handshake_is_clean(self):
+        code, frames, _ = run_cnode([frame()])
+        self.assertEqual(code, 0)
+
+
+@unittest.skipUnless(shutil.which("make") and (shutil.which("cc") or shutil.which("gcc")),
+                     "needs make and a C compiler")
+class LiveTest(unittest.TestCase):
+    """A real Python node links to the C node over an ssh-style link (a fake ssh runs
+    the C binary locally). The Python node must see the C node alive."""
+
+    @classmethod
+    def setUpClass(cls):
+        subprocess.check_call(["make", "-s", "-C", CNODE_DIR, "cnode"])
+        cls.tmp = tempfile.mkdtemp()
+        cls.home = os.path.join(cls.tmp, "home")
+        cls.bin = os.path.join(cls.tmp, "bin")
+        os.makedirs(cls.home)
+        os.makedirs(cls.bin)
+        with open(os.path.join(cls.bin, "ssh"), "w") as fh:
+            # Drop ssh options and the target, then run the remote command locally.
+            fh.write('#!/bin/sh\nwhile [ "$1" != "" ]; do case "$1" in -o|-p|-i) shift 2 ;; -*) shift ;; *) break ;; esac; done\n'
+                     'shift\nexec sh -c "$*"\n')
+        os.chmod(os.path.join(cls.bin, "ssh"), 0o755)
+        cls.env = dict(os.environ, PATH=cls.bin + os.pathsep + os.environ["PATH"])
+        cls.listen = free_port()
+        cls.control = free_port()
+        config = {"node": "live-py", "authority": "live-py", "listen": cls.listen,
+                  "control_port": cls.control, "allow": ["127.0.0.1"],
+                  "peers": [{"kind": "ssh", "target": "cnode@localhost",
+                             "command": "%s --stdio --node cn1" % BINARY}]}
+        with open(os.path.join(cls.home, "config.json"), "w") as fh:
+            json.dump(config, fh)
+        cls.agentipc = [sys.executable, os.path.join(REPO, "bin", "agentipc"), "--home", cls.home]
+        cls.log = os.path.join(cls.tmp, "node.log")
+        cls.node = subprocess.Popen(cls.agentipc + ["node", "run"], env=cls.env,
+                                    stdout=open(cls.log, "w"), stderr=subprocess.STDOUT)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.node.terminate()
+        cls.node.wait()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def nodes(self):
+        out = subprocess.check_output(self.agentipc + ["bridge", "client"], env=self.env,
+                                      input=b"NODES\n", timeout=20).decode("utf-8")
+        return [json.loads(line[5:]) for line in out.splitlines() if line.startswith("NODE ")]
+
+    def test_python_node_sees_the_c_node_alive(self):
+        deadline = time.time() + 60
+        rows = []
+        while time.time() < deadline:
+            try:
+                rows = self.nodes()
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                rows = []
+            if any(r["node"] == "cn1" and r["alive"] for r in rows):
+                break
+            time.sleep(1.0)
+        with open(self.log) as fh:
+            log = fh.read()[-2000:]
+        self.assertTrue(any(r["node"] == "cn1" and r["alive"] for r in rows),
+                        "cn1 not alive; node rows: %r\nnode log:\n%s" % (rows, log))
 
 
 if __name__ == "__main__":
