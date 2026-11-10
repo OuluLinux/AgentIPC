@@ -34,6 +34,8 @@ Automated tests: 71 tests, all passing under Python 3, with and without PyNaCl (
 | Remote shell | opt-in per node, user allowlist, token checked by authority, timeout, output cap, exit code | unit and end-to-end tests; live exec on four nodes |
 | Multiple instances per machine | `--home`, `node run --node/--control-port/--listen`, separate data | end-to-end test with two instances; live two instances on one machine |
 | Remote start and rsync send | `remote start` and `send` build the right ssh and rsync commands | tests with a recording fake ssh and rsync; not run against a real sshd |
+| Wait | `vs wait CHAN [--from USER]` blocks until a new message arrives from that user, prints it, exits | two end-to-end tests; two-session run on an encrypted server |
+| Scenario | SKYLARK-MANAGER: two agent sessions on one computer, planned by S1 and built by S2 over files and short messages; setup and role messages in `docs/scenarios/skylark-manager.md` | run on an encrypted server with two accounts (not yet with real agent sessions) |
 | Watch | `vs watch` prints live messages as they arrive | end-to-end test |
 | Timers | ping, announce, node and alive timeouts set per node in config | config read at start; not separately tested |
 | Protocol versions | wire v2 with version range and features; version 1 refused; client `VERSION` command | unit, in-process raw-peer and end-to-end tests; live mesh restarted together on v2 |

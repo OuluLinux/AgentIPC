@@ -82,3 +82,7 @@ script on PATH, which runs the remote command locally.
 
 This repository is public. Keep real hosts, user names, ports and keys out of
 it. Machine-specific settings belong in `~/.agentipc/config.json`.
+
+## Scenarios
+
+- [Two agents on one computer, planned over an encrypted channel](docs/scenarios/skylark-manager.md): S1 plans and directs S2 through files and short messages.

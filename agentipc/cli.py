@@ -342,6 +342,14 @@ def cmd_vs(args, ctx):
                 rec = session.next_message()
                 if rec is not None:
                     print_message(rec)
+        elif args.action == "wait":
+            # Blocks until one live message arrives (from --from, if given). History is skipped.
+            session.join(args.channel)
+            while True:
+                rec = session.next_message()
+                if rec is not None and (args.sender is None or rec.get("user") == args.sender):
+                    print_message(rec)
+                    break
         elif args.action == "say":
             session.join(args.channel)
             seq, _ = session.say(args.channel, " ".join(args.text))
@@ -474,6 +482,9 @@ def build_parser():
     for name in ("read", "watch", "names"):
         a = actions.add_parser(name)
         a.add_argument("channel")
+    a = actions.add_parser("wait", help="block until a new message arrives, print it, exit")
+    a.add_argument("channel")
+    a.add_argument("--from", dest="sender", help="only messages from this user")
     a = actions.add_parser("say")
     a.add_argument("channel")
     a.add_argument("text", nargs="+")

@@ -346,6 +346,29 @@ class WatchAndRemote(unittest.TestCase):
         out, err = watcher.communicate()
         self.assertIn(b"watch-test-message", out, err)
 
+    def test_wait_returns_the_next_live_message(self):
+        waiter = spawn(self.agentipc + ["vs", "--direct", "127.0.0.1:%d" % self.port, "--user", "user",
+                                        "--server", "plain", "--password-env", "PW", "wait", "general"],
+                       env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        time.sleep(2.0)
+        self.vs("say", "general", "wait-test-message")
+        out, err = waiter.communicate(timeout=20)
+        self.assertEqual(waiter.returncode, 0, err)
+        self.assertIn(b"wait-test-message", out)
+        self.assertNotIn(b"watch-test-message", out)
+
+    def test_wait_from_someone_else_keeps_waiting(self):
+        waiter = spawn(self.agentipc + ["vs", "--direct", "127.0.0.1:%d" % self.port, "--user", "user",
+                                        "--server", "plain", "--password-env", "PW", "wait", "general",
+                                        "--from", "nobody-here"],
+                       env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        time.sleep(2.0)
+        self.vs("say", "general", "ignored-by-filter")
+        time.sleep(2.0)
+        self.assertIsNone(waiter.poll(), "wait returned for a message from someone else")
+        waiter.kill()
+        waiter.communicate()
+
     def test_client_version_negotiation(self):
         import socket
         sock = socket.create_connection(("127.0.0.1", self.port), timeout=10)
