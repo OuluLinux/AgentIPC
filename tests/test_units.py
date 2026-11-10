@@ -306,3 +306,13 @@ class VersionTest(unittest.TestCase):
             bad = dict(frame, **patch)
             with self.assertRaises(proto.ProtoError):
                 proto.decode(proto.encode(bad))
+
+
+class RecordNumberTest(unittest.TestCase):
+    def test_restarted_node_does_not_reuse_record_numbers(self):
+        from agentipc.node import Node
+        before = Node("A")
+        last = [before.next_oseq() for _ in range(3)][-1]
+        time.sleep(0.01)
+        after = Node("A")
+        self.assertGreater(after.next_oseq(), last)

@@ -29,7 +29,9 @@ class Node(object):
         self.deadlines = {}       # request id -> time after which it fails with "timeout"
         self.announces = {}       # origin -> its latest accepted announce packet, replayed to new links
         self.services = []        # objects with on_link_up(link) and on_node_gone(node)
-        self.oseq = 0             # sequence for records originated here
+        # Record numbers start from the clock, so a restarted node does not reuse
+        # numbers it already published. A reused (origin, oseq) is dropped as a duplicate.
+        self.oseq = int(time.time() * 1000)
         self.ping_interval = 10.0
         self.announce_interval = 30.0
         self.node_timeout = 120.0 # forget a node after this long without an announcement
