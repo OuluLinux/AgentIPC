@@ -109,6 +109,10 @@ class Daemon(object):
                 break
             if allow is not None and addr[0] not in allow:
                 log("refused direct connection from %s" % addr[0])
+                try:
+                    conn.sendall(b"ERR not-allowed\n")
+                except (socket.error, OSError):
+                    pass
                 _shutdown(conn)
                 continue
             _thread(self._serve, conn, "direct" if allow is not None else "ssh")

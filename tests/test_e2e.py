@@ -256,6 +256,7 @@ class DirectLinks(unittest.TestCase):
                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         _, err = proc.communicate(timeout=20)
         self.assertNotEqual(proc.returncode, 0)
+        self.assertIn(b"not-allowed", err)
 
     def test_direct_link_reconnects_after_the_node_restarts(self):
         self.procs["D"].terminate()
