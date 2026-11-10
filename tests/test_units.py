@@ -65,6 +65,14 @@ class TopologyTest(unittest.TestCase):
         self.assertFalse(t.update("B", 4, ["A", "C"], time.time()))
         self.assertIsNone(t.next_hop("C"))
 
+    def test_restarted_node_announces_outrank_its_old_ones(self):
+        old = Topology("A")
+        for _ in range(3):
+            old_seq = old.set_own(["B"])
+        time.sleep(0.01)
+        restarted = Topology("A")
+        self.assertGreater(restarted.set_own(["B"]), old_seq)
+
     def test_one_sided_claim_is_not_a_route(self):
         t = Topology("A")
         t.set_own(["B"])

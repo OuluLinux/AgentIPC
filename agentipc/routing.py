@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Routing state: link-state topology, next hops, ping results, dedupe cache."""
 
+import time
 from collections import OrderedDict
 from collections import deque
 
@@ -10,7 +11,9 @@ class Topology(object):
 
     def __init__(self, me):
         self.me = me
-        self.seq = 0
+        # Start from the clock, so a restarted node's announcements outrank the ones
+        # its neighbours still remember. Otherwise they are ignored until the old entry expires.
+        self.seq = int(time.time() * 1000)
         self.graph = {me: set()}     # origin -> neighbours it announced
         self.stamps = {}             # origin -> (seq, time received)
         self.routes = {}             # destination -> first hop neighbour
