@@ -5,6 +5,7 @@
 
 #include "json.h"
 #include "leaf.h"
+#include "net.h"
 #include "proto.h"
 
 #define EXIT_OK 0
@@ -13,7 +14,8 @@
 
 static void usage(void)
 {
-    fprintf(stderr, "usage: cnode --stdio --node NAME [--link ssh|direct] [--announce-interval SECONDS]\n");
+    fprintf(stderr, "usage: cnode --stdio --node NAME [--link ssh|direct] [--announce-interval SECONDS]\n"
+                    "       cnode --listen PORT --node NAME [--announce-interval SECONDS]\n");
 }
 
 /* Reads one line without its newline. NULL at end of input, or if the line is too long
@@ -153,16 +155,64 @@ static int serve(FILE *in, FILE *out, cn_leaf *lf)
     }
 }
 
+/* One link from start to finish: handshake, then the leaf loop. */
+static int run_link(FILE *in, FILE *out, const char *node, const char *link, int interval)
+{
+    char peer[65];
+    int version = 0, status;
+    cn_leaf lf;
+
+    status = handshake(in, out, node, link, peer, &version);
+    if (status != 0) {
+        return status;
+    }
+    fprintf(stderr, "linked to %s at version %d\n", peer, version);
+    cn_leaf_init(&lf, node, peer, interval);
+    cn_leaf_link_up(&lf, out);
+    return serve(in, out, &lf);
+}
+
+/* Accepts loopback connections for ever. Each starts with "MODE link" (a direct
+   link, as Python's direct dialer sends) and is served until it ends. */
+static int run_listener(int port, const char *node, int interval)
+{
+    int lfd;
+    FILE *in, *out;
+    char *line;
+    size_t len;
+    int too_long;
+
+    lfd = cn_listen_loopback(port);
+    if (lfd < 0) {
+        fprintf(stderr, "cnode: cannot listen on 127.0.0.1:%d\n", port);
+        return EXIT_USAGE;
+    }
+    fprintf(stderr, "listening on 127.0.0.1:%d\n", port);
+    for (;;) {
+        if (cn_accept(lfd, &in, &out) < 0) {
+            continue;
+        }
+        line = read_line(in, &len, &too_long);
+        if (line != NULL && strcmp(line, "MODE link") == 0) {
+            free(line);
+            run_link(in, out, node, "direct", interval);
+        } else {
+            free(line);
+        }
+        cn_close(in, out);
+    }
+}
+
 int main(int argc, char **argv)
 {
     const char *node = NULL, *link = "ssh";
-    int stdio = 0, version = 0, interval = CN_ANNOUNCE_INTERVAL, i, status;
-    char peer[65];
-    cn_leaf lf;
+    int stdio = 0, port = 0, interval = CN_ANNOUNCE_INTERVAL, i;
 
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--stdio") == 0) {
             stdio = 1;
+        } else if (strcmp(argv[i], "--listen") == 0 && i + 1 < argc) {
+            port = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--node") == 0 && i + 1 < argc) {
             node = argv[++i];
         } else if (strcmp(argv[i], "--link") == 0 && i + 1 < argc) {
@@ -178,7 +228,15 @@ int main(int argc, char **argv)
             return EXIT_USAGE;
         }
     }
-    if (!stdio || node == NULL || !cn_valid_node(node)) {
+    if (node == NULL || !cn_valid_node(node)) {
+        usage();
+        return EXIT_USAGE;
+    }
+    cn_ignore_sigpipe();
+    if (port > 0 && port < 65536 && !stdio) {
+        return run_listener(port, node, interval);
+    }
+    if (!stdio || port != 0) {
         usage();
         return EXIT_USAGE;
     }
@@ -186,12 +244,5 @@ int main(int argc, char **argv)
         usage();
         return EXIT_USAGE;
     }
-    status = handshake(stdin, stdout, node, link, peer, &version);
-    if (status != 0) {
-        return status;
-    }
-    fprintf(stderr, "linked to %s at version %d\n", peer, version);
-    cn_leaf_init(&lf, node, peer, interval);
-    cn_leaf_link_up(&lf, stdout);
-    return serve(stdin, stdout, &lf);
+    return run_link(stdin, stdout, node, link, interval);
 }

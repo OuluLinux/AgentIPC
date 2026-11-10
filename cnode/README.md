@@ -10,7 +10,19 @@ It speaks the same wire protocol as `agentipc/` (see `DESIGN.md`, "Versioning").
 
 ## Run
 
+Over ssh (stdio), the link is the process's stdin and stdout:
+
     cnode/cnode --stdio --node NAME [--link ssh|direct] [--announce-interval SECONDS]
+
+As a direct link on localhost, the node listens on 127.0.0.1 and serves one link
+after another. Python's direct dialer (`kind: direct`, `host: 127.0.0.1`) connects
+and sends `MODE link` first. Plain TCP is used: localhost needs no encryption, so
+ssh is not involved.
+
+    cnode/cnode --listen PORT --node NAME [--announce-interval SECONDS]
+
+The listener binds only 127.0.0.1. Any local user can connect to it and speak as
+this leaf, so run it only on a machine where that is acceptable.
 
 The link runs over stdin and stdout, which is what `ssh host cnode --stdio`
 gives. The node sends its `hello`, reads the peer's, and checks the version
@@ -32,11 +44,14 @@ After the handshake the node is a leaf: it has one link and does no routing.
 - Hello: version and `min_version` negotiation, `features`, self-link check,
   and bad-frame checks on every field. Same reasons as the Python node.
 - Leaf: link stays open, announces, answers pings, packet checks.
+- Direct link on localhost: `--listen PORT` serves one link after another.
 - Tests in `tests/test_cnode.py`:
   - handshake cases, driven with frames built by the Python `proto` module;
   - leaf behaviour, including refusals;
   - a live test: a real Python node links to the C binary through a fake ssh,
-    and sees it alive.
+    and sees it alive;
+  - listener tests: a direct link on localhost (two links in a row), and a
+    non-link connection being closed.
 
 ## Not done yet
 
@@ -48,5 +63,4 @@ After the handshake the node is a leaf: it has one link and does no routing.
   check features before sending a kind (for example `exec` to a node without
   `shell`).
 - Virtual server, shell, file transfer.
-- Direct TCP listening (`--link direct` is only the name in the hello).
 - Retro targets. Each one needs its own build and test run.

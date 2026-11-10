@@ -263,5 +263,53 @@ class LiveTest(unittest.TestCase):
                         "cn1 not alive; node rows: %r\nnode log:\n%s" % (rows, log))
 
 
+@unittest.skipUnless(shutil.which("make") and (shutil.which("cc") or shutil.which("gcc")),
+                     "needs make and a C compiler")
+class ListenTest(unittest.TestCase):
+    """Loopback direct links: the node listens, a Python dialer connects with MODE link."""
+
+    @classmethod
+    def setUpClass(cls):
+        subprocess.check_call(["make", "-s", "-C", CNODE_DIR, "cnode"])
+        cls.port = free_port()
+        cls.proc = subprocess.Popen([BINARY, "--listen", str(cls.port), "--node", "cn-l"],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            try:
+                socket.create_connection(("127.0.0.1", cls.port), timeout=0.5).close()
+                break
+            except socket.error:
+                time.sleep(0.05)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proc.kill()
+        cls.proc.wait()
+
+    def dial(self, first_line):
+        sock = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+        sock.sendall(first_line)
+        return sock, sock.makefile("rb")
+
+    def test_direct_link_handshake_announce_and_pong(self):
+        for attempt in (1, 2):  # the node serves again after a link ends
+            sock, reader = self.dial(b"MODE link\n" +
+                                     (json.dumps(proto.hello("py-peer", "direct")) + "\n").encode("ascii") +
+                                     packet("cn-l", payload={"t": 3.5}).encode("ascii"))
+            lines = [json.loads(reader.readline().decode("ascii")) for _ in range(3)]
+            sock.close()
+            self.assertEqual(lines[0]["node"], "cn-l", attempt)
+            self.assertEqual(lines[1]["kind"], "announce", attempt)
+            self.assertEqual(lines[2]["kind"], "pong", attempt)
+            self.assertEqual(lines[2]["payload"], {"t": 3.5}, attempt)
+
+    def test_non_link_connection_is_closed(self):
+        sock, reader = self.dial(b"MODE client\n")
+        sock.settimeout(5)
+        self.assertEqual(reader.readline(), b"")
+        sock.close()
+
+
 if __name__ == "__main__":
     unittest.main()
