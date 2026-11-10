@@ -1,6 +1,6 @@
 # AgentIPC status
 
-Last updated: 2026-11-10. Commit `036a003` plus the status notes.
+Last updated: 2026-11-10. Commit `e91d439`, plus the status notes.
 
 This file lists what is implemented, what was tested and how, what is not
 done, and known gaps. [DESIGN.md](DESIGN.md) describes the design.
@@ -29,6 +29,8 @@ Automated tests: 71 tests, all passing under Python 3, with and without PyNaCl (
 | Virtual server | channels, membership, history sync, node-loss cleanup | in-process and end-to-end tests; live messages across chains and triangle |
 | Encrypted virtual servers | PyNaCl SecretBox, key wrapped under the password key, relays see ciphertext | venv tests; relay files checked for plaintext |
 | File transfer | 32 KiB chunks, out-of-order assembly, SHA-256 check (plain servers only) | unit tests; live 300 KB chain and 200 KB triangle transfers, checksums matched |
+| Login and token deadlines | login and token checks fail after 20 s with no answer | mesh request-timeout test; live login |
+| Inbox per user | received files are filed under `user@node` | unit and end-to-end tests; live file transfer |
 | Remote shell | opt-in per node, user allowlist, token checked by authority, timeout, output cap, exit code | unit and end-to-end tests; live exec on four nodes |
 | Multiple instances per machine | `--home`, `node run --node/--control-port/--listen`, separate data | end-to-end test with two instances; live two instances on one machine |
 | Remote start and rsync send | `remote start` and `send` commands | written; **not run**, no test |
@@ -55,14 +57,12 @@ three-hop chain, direct triangle, node loss and recovery, shell on all nodes.
 ## Known gaps
 
 - **Single authority.** If the authority node is down, logins and token checks fail. No failover.
-- **Sender in the inbox.** Received files are filed under the node where the transfer entered the mesh, not the sending user.
+- **Inbox folders.** Received files go in `user@node`, where `node` is where the upload entered the mesh. That is not always the machine the file came from.
 - **Shell access is broad.** Any user on a node's `shell.users` list runs arbitrary commands as that node's user. Keep lists short.
 - **Plain servers expose messages to relays.** Message bodies on a plain server are readable by every node that carries them.
 - **Control socket is local-only but unauthenticated.** Any local user can reach `127.0.0.1` control ports.
 - **Refusal messages are terse.** Login errors are short codes, and so are direct-link refusals.
-- **Request timeouts apply only to `exec`.** Other requests, such as login, have no deadline.
 - **Python 2.7 untested.** See above.
-- **Test processes.** The end-to-end tests can leave node processes behind if a run is interrupted.
 
 ## Test environment notes
 
