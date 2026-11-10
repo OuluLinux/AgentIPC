@@ -37,6 +37,7 @@ Automated tests: 71 tests, all passing under Python 3, with and without PyNaCl (
 | Watch | `vs watch` prints live messages as they arrive | end-to-end test |
 | Timers | ping, announce, node and alive timeouts set per node in config | config read at start; not separately tested |
 | Protocol versions | wire v2 with version range and features; version 1 refused; client `VERSION` command | unit, in-process raw-peer and end-to-end tests; live mesh restarted together on v2 |
+| Record numbers across restarts | a restarted node no longer reuses record numbers; posts after a restart are kept | unit test; live posts from every origin after a restart |
 | Error text | error codes keep their code and add a plain reason | unit tests |
 | Target bridge command | per-target `command` for `vs --ssh` | end-to-end tests; live |
 
