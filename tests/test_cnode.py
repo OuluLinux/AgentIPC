@@ -143,6 +143,7 @@ class LeafTest(unittest.TestCase):
         self.assertEqual(announce["src"], "cnode-1")
         self.assertEqual(announce["dst"], "*")
         self.assertEqual(announce["payload"]["links"], ["py-peer"])
+        self.assertEqual(announce["payload"]["features"], ["core"])
         self.assertIsInstance(announce["payload"]["seq"], int)
         self.assertGreater(announce["payload"]["seq"], 0)
 

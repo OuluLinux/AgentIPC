@@ -308,6 +308,27 @@ class VersionTest(unittest.TestCase):
                 proto.decode(proto.encode(bad))
 
 
+class FeatureGateTest(unittest.TestCase):
+    def test_kinds_need_the_matching_feature(self):
+        self.assertEqual(proto.needs_feature("exec"), "shell")
+        self.assertEqual(proto.needs_feature("file"), "file")
+        self.assertEqual(proto.needs_feature("login-proof"), "vs")
+        self.assertEqual(proto.needs_feature("ping"), "core")
+
+    def test_send_skips_a_node_that_lacks_the_feature(self):
+        from agentipc.node import Node
+        node = Node("A")
+        node.features["B"] = ["core"]
+        self.assertFalse(node._takes("B", "exec"))
+        self.assertTrue(node._takes("B", "ping"))
+        self.assertFalse(node.send("B", "exec", {}))
+
+    def test_nodes_that_announce_nothing_are_not_refused(self):
+        from agentipc.node import Node
+        node = Node("A")
+        self.assertTrue(node._takes("B", "exec"))
+
+
 class RecordNumberTest(unittest.TestCase):
     def test_restarted_node_does_not_reuse_record_numbers(self):
         from agentipc.node import Node

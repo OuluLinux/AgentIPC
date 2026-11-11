@@ -254,8 +254,17 @@ sends nothing gets version 1 behaviour. An unsupported request gets
 Process model: `agentipc node run` is the daemon. Remote ssh sessions run
 `agentipc bridge link` (peer links) or `agentipc bridge client` (client
 sessions), which pipe stdin and stdout to the daemon's control socket. The
-local control socket listens on 127.0.0.1 only; any local user can reach it,
-so run nodes on machines where that is acceptable.
+local control socket listens on 127.0.0.1 only and needs a secret. The secret
+is random, written to `control.token` in the node's home with mode 0600, and
+sent after the mode: `MODE link SECRET` or `MODE client SECRET`. Other local
+users cannot read it, so they cannot open links or client sessions. The direct
+listener is not affected: it uses the allowlist instead.
+
+## Feature gate
+Announces carry the node's `features`. Before a unicast send, the sender skips
+any node that announced its features and lacks the one the kind needs
+(`proto.KIND_FEATURES`). A refused send reports `ERR no-route`. Nodes that
+announce no features are not refused.
 
 ## Decisions taken during implementation
 

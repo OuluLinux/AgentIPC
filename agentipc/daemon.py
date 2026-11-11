@@ -10,6 +10,7 @@ Connections arrive in two ways:
 Each connection begins with one line, `MODE link` or `MODE client`.
 """
 
+import binascii
 import os
 import socket
 import subprocess
@@ -40,6 +41,31 @@ def _shutdown(sock):
     sock.close()
 
 
+TOKEN_FILE = "control.token"
+
+
+def control_token(home):
+    """The secret that local control connections must send. Created on first use,
+    readable by its owner only. Other local users cannot read it, so they cannot
+    open a link or a client session through the control port."""
+    path = os.path.join(home, TOKEN_FILE)
+    if not os.path.exists(path):
+        # Write the secret to a temporary file, then link it into place. The link
+        # fails if another process got there first, so no reader ever sees an empty file.
+        tmp = "%s.%s.tmp" % (path, binascii.hexlify(os.urandom(4)).decode("ascii"))
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(binascii.hexlify(os.urandom(16)).decode("ascii") + "\n")
+        try:
+            os.link(tmp, path)
+        except OSError:
+            pass
+        finally:
+            os.remove(tmp)
+    with open(path) as fh:
+        return fh.read().strip()
+
+
 class Daemon(object):
     def __init__(self, node_id, cfg, home):
         self.cfg = cfg
@@ -50,6 +76,7 @@ class Daemon(object):
             if key in cfg:
                 setattr(self.node, key, float(cfg[key]))
         self.control_port = cfg.get("control_port", DEFAULT_CONTROL_PORT)
+        self.control_secret = control_token(home)
         self.listen_port = None
         self.authority = auth.install(
             self.node, auth.Accounts(os.path.join(home, "accounts.json")) if self.node.is_authority() else None)
@@ -93,7 +120,7 @@ class Daemon(object):
         sock.listen(16)
         self.control_port = sock.getsockname()[1]
         self._sockets.append(sock)
-        _thread(self._accept_loop, sock, None)
+        _thread(self._accept_loop, sock, None, True)
 
     def _listen_direct(self):
         allow = set(self.cfg.get("allow", []))
@@ -105,7 +132,7 @@ class Daemon(object):
         self._sockets.append(sock)
         _thread(self._accept_loop, sock, allow)
 
-    def _accept_loop(self, sock, allow):
+    def _accept_loop(self, sock, allow, control=False):
         while not self._stopping.is_set():
             try:
                 conn, addr = sock.accept()
@@ -119,10 +146,13 @@ class Daemon(object):
                     pass
                 _shutdown(conn)
                 continue
-            _thread(self._serve, conn, "direct" if allow is not None else "ssh")
+            _thread(self._serve, conn, "direct" if allow is not None else "ssh", control)
 
-    def _serve(self, conn, kind):
-        """Read the MODE line, then hand the connection to a link or a client session."""
+    def _serve(self, conn, kind, control=False):
+        """Read the MODE line, then hand the connection to a link or a client session.
+
+        Control connections must send the control secret after the mode:
+        "MODE link SECRET" or "MODE client SECRET"."""
         rfile = conn.makefile("rb")
         wfile = conn.makefile("wb")
         try:
@@ -132,6 +162,12 @@ class Daemon(object):
         except (socket.error, OSError, ValueError):
             _shutdown(conn)
             return
+        if control:
+            if len(mode) != 3 or mode[2] != self.control_secret:
+                log("refused control connection without the secret")
+                _shutdown(conn)
+                return
+            mode = mode[:2]
         if mode == ["MODE", "link"]:
             self.node.make_link(rfile, wfile, kind, closer=lambda: _shutdown(conn))
         elif mode == ["MODE", "client"]:

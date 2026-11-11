@@ -317,8 +317,9 @@ class WatchAndRemote(unittest.TestCase):
         subprocess.check_call(cls.agentipc + ["--home", cls.home, "account", "add", "user", "--password-env", "PW"],
                               env=cls.env)
         subprocess.check_call(cls.agentipc + ["--home", cls.home, "server", "create", "plain"], env=cls.env)
+        cls.control = free_port()
         cls.node = spawn(cls.agentipc + ["--home", cls.home, "node", "run", "--node", "solo",
-                                         "--control-port", str(free_port())],
+                                         "--control-port", str(cls.control)],
                          env=cls.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         assert wait_port(cls.port)
         time.sleep(1.0)
@@ -368,6 +369,32 @@ class WatchAndRemote(unittest.TestCase):
         self.assertIsNone(waiter.poll(), "wait returned for a message from someone else")
         waiter.kill()
         waiter.communicate()
+
+    def test_control_port_refuses_a_connection_without_the_secret(self):
+        import socket
+        sock = socket.create_connection(("127.0.0.1", self.control), timeout=10)
+        sock.sendall(b"MODE client\nVERSION 1\n")
+        self.assertEqual(sock.makefile("rb").readline(), b"")
+        sock.close()
+
+    def test_control_port_accepts_the_secret(self):
+        import socket
+        with open(os.path.join(self.home, "control.token")) as fh:
+            secret = fh.read().strip()
+        sock = socket.create_connection(("127.0.0.1", self.control), timeout=10)
+        sock.sendall(("MODE client %s\nVERSION 1\n" % secret).encode("ascii"))
+        self.assertEqual(sock.makefile("rb").readline(), b"VERSION 1\n")
+        sock.close()
+
+    def test_reply_arrives_after_the_client_closes_its_side(self):
+        import socket
+        with open(os.path.join(self.home, "control.token")) as fh:
+            secret = fh.read().strip()
+        sock = socket.create_connection(("127.0.0.1", self.control), timeout=10)
+        sock.sendall(("MODE client %s\nVERSION 1\n" % secret).encode("ascii"))
+        sock.shutdown(socket.SHUT_WR)
+        self.assertEqual(sock.makefile("rb").readline(), b"VERSION 1\n")
+        sock.close()
 
     def test_client_version_negotiation(self):
         import socket

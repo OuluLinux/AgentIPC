@@ -13,6 +13,13 @@ MIN_PROTOCOL_VERSION = 2
 # What this node can do. A node that lacks a feature (a small C node has no
 # virtual server) says so, and the other side can avoid sending it those kinds.
 FEATURES = ["core", "vs", "shell", "file"]
+# Unicast kinds that only a node with a feature can handle. Any other kind needs "core".
+KIND_FEATURES = {
+    "exec": "shell", "exec-result": "shell",
+    "file": "file",
+    "login-start": "vs", "login-proof": "vs", "verify": "vs",
+    "sync": "vs", "history": "vs", "membership": "vs", "channel": "vs",
+}
 MAX_LINE = 1 << 20
 DEFAULT_TTL = 16
 MAX_TTL = 64
@@ -107,6 +114,10 @@ def hello(node, link, features=None):
     return {"type": "hello", "node": node, "version": PROTOCOL_VERSION,
             "min_version": MIN_PROTOCOL_VERSION, "link": link,
             "features": list(FEATURES if features is None else features)}
+
+
+def needs_feature(kind):
+    return KIND_FEATURES.get(kind, "core")
 
 
 def negotiate(peer_version, peer_min):

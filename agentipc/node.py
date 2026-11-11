@@ -28,6 +28,7 @@ class Node(object):
         self.requests = {}        # request id -> callback(payload)
         self.deadlines = {}       # request id -> time after which it fails with "timeout"
         self.announces = {}       # origin -> its latest accepted announce packet, replayed to new links
+        self.features = {}        # origin -> feature list from its accepted announce (see proto.KIND_FEATURES)
         self.services = []        # objects with on_link_up(link) and on_node_gone(node)
         # Record numbers start from the clock, so a restarted node does not reuse
         # numbers it already published. A reused (origin, oseq) is dropped as a duplicate.
@@ -86,7 +87,7 @@ class Node(object):
                 self._dispatch(pkt)
                 self._flood(pkt, None)
                 return True
-            targets = [d for d in proto.destinations(dst) if self.seen.add((self.id, pkt["id"], d))]
+            targets = [d for d in proto.destinations(dst) if self._takes(d, kind) and self.seen.add((self.id, pkt["id"], d))]
             return self._forward(pkt, targets, None)
 
     def request(self, dst, kind, payload, callback, timeout=None):
@@ -238,10 +239,15 @@ class Node(object):
     def _neighbours(self):
         return sorted(set(link.peer for link in self.links))
 
+    def _takes(self, name, kind):
+        """False only when name announced its features and lacks the one this kind needs."""
+        features = self.features.get(name)
+        return features is None or proto.needs_feature(kind) in features
+
     def _announce_now(self):
         neighbours = self._neighbours()
         seq = self.topology.set_own(neighbours)
-        self.send(proto.FLOOD, "announce", {"seq": seq, "links": neighbours})
+        self.send(proto.FLOOD, "announce", {"seq": seq, "links": neighbours, "features": list(proto.FEATURES)})
 
     def _h_announce(self, pkt):
         payload = pkt["payload"]
@@ -253,6 +259,9 @@ class Node(object):
             proto.check_node(name)
         if self.topology.update(pkt["src"], seq, links, time.time()):
             self.announces[pkt["src"]] = pkt
+            features = payload.get("features")
+            if isinstance(features, list) and all(isinstance(f, str) for f in features):
+                self.features[pkt["src"]] = features
 
     def _h_ping(self, pkt):
         self.send(pkt["src"], "pong", {"t": pkt["payload"].get("t")})
@@ -289,6 +298,7 @@ class Node(object):
                     last_ping = now
                 for origin in self.topology.expire(now, self.node_timeout):
                     self.announces.pop(origin, None)
+                    self.features.pop(origin, None)
                     for service in self.services:
                         service.on_node_gone(origin)
             self._expire_requests(now)

@@ -34,6 +34,7 @@ REASONS = {
     "shell-disabled": "shell commands are off on that node",
     "not-allowed": "not allowed: check the node's allow list or shell users",
     "timeout": "no answer in time",
+    "no-route": "no route to that node, or it does not offer this service",
     "not-joined": "join the channel first",
     "bad-body": "message is empty or too long",
     "bad-frame": "the node sent something it cannot read",

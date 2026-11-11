@@ -42,6 +42,7 @@ except ImportError:  # Python 2
 MAX_BODY = 4096
 HISTORY_CHUNK = 50
 LOGIN_TIMEOUT = 20.0
+WRITE_FLUSH_TIMEOUT = 10.0
 CLIENT_PROTOCOL_VERSION = 1
 
 
@@ -258,7 +259,9 @@ class ClientSession(object):
         finally:
             with self.node.lock:
                 self.vs.session_closed(self)
+            # Let the writer send what is already queued before the caller closes the socket.
             self._out.put(None)
+            writer.join(WRITE_FLUSH_TIMEOUT)
 
     def _write_loop(self):
         while True:

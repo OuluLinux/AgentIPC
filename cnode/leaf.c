@@ -39,7 +39,7 @@ static void announce(cn_leaf *lf, FILE *out)
     lf->last_announce = time(NULL);
     sprintf(line, "{\"type\": \"packet\", \"src\": \"%s\", \"dst\": \"*\", \"id\": \"%s\", "
                   "\"ttl\": %d, \"kind\": \"announce\", "
-                  "\"payload\": {\"seq\": %.0f, \"links\": [\"%s\"]}}\n",
+                  "\"payload\": {\"seq\": %.0f, \"links\": [\"%s\"], \"features\": [\"core\"]}}\n",
             lf->self, id, CN_DEFAULT_TTL, lf->seq, lf->peer);
     write_line(out, line);
 }

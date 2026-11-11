@@ -13,7 +13,7 @@ import sys
 import threading
 
 from agentipc import auth, client, config as config_mod, crypto
-from agentipc.daemon import DEFAULT_CONTROL_PORT, Daemon
+from agentipc.daemon import DEFAULT_CONTROL_PORT, Daemon, control_token
 from agentipc.store import Store, StoreError, check_agent
 
 TUTORIAL = """\
@@ -188,7 +188,8 @@ def cmd_bridge(args, ctx):
     """Pipe stdin and stdout to this machine's node. ssh runs this on the remote side."""
     port = ctx.cfg.get("control_port", DEFAULT_CONTROL_PORT)
     sock = socket.create_connection(("127.0.0.1", port))
-    sock.sendall(("MODE %s\n" % args.mode).encode("ascii"))
+    secret = control_token(ctx.home)
+    sock.sendall(("MODE %s %s\n" % (args.mode, secret)).encode("ascii"))
 
     def pump_in():
         while True:
