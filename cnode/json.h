@@ -23,4 +23,24 @@ jval *json_parse(const char *text, size_t len);
 const jval *json_get(const jval *obj, const char *key);
 void json_free(jval *v);
 
+/* A growing byte buffer for building JSON text. */
+typedef struct sbuf sbuf;
+struct sbuf {
+    char *data;
+    size_t len;
+    size_t cap;
+};
+
+/* Each returns 0 on success, -1 on out of memory. */
+int sb_add(sbuf *b, const char *s, size_t n);
+int sb_adds(sbuf *b, const char *s);
+void sb_free(sbuf *b);
+
+/* Appends s as a JSON string, quotes and escapes included. */
+int json_write_string(sbuf *b, const char *s);
+
+/* Appends the JSON text of v. Output is ASCII: non-ASCII text becomes \uXXXX escapes,
+   as Python's json.dumps does. Returns 0 on success, -1 on out of memory. */
+int json_write(sbuf *b, const jval *v);
+
 #endif

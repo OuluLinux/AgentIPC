@@ -57,6 +57,48 @@ int main(void)
     }
     json_free(v);
 
+    /* \u escapes decode to UTF-8, surrogate pairs included. */
+    s = "\"caf\\u00e9 \\ud83d\\ude00\"";
+    v = json_parse(s, strlen(s));
+    if (v == NULL || strcmp(v->str, "caf\xc3\xa9 \xf0\x9f\x98\x80") != 0) {
+        printf("FAIL \\u decoding\n");
+        failures++;
+    }
+    json_free(v);
+
+    /* The writer escapes non-ASCII as \\u and round-trips through the reader. */
+    s = "{\"b\": [1, 2.5, true, null], \"a\": \"x\\ny\xc3\xa9\"}";
+    v = json_parse(s, strlen(s));
+    if (v == NULL) {
+        printf("FAIL writer input\n");
+        failures++;
+    } else {
+        sbuf out = {NULL, 0, 0};
+        jval *again;
+        if (json_write(&out, v) < 0) {
+            printf("FAIL writer\n");
+            failures++;
+        } else {
+            size_t i;
+            for (i = 0; i < out.len; i++) {
+                if ((unsigned char)out.data[i] >= 0x80) {
+                    printf("FAIL writer output not ASCII\n");
+                    failures++;
+                    break;
+                }
+            }
+            again = json_parse(out.data, out.len);
+            if (again == NULL || strcmp(json_get(again, "a")->str, "x\ny\xc3\xa9") != 0 ||
+                json_get(again, "b")->n != 4) {
+                printf("FAIL writer round trip: %s\n", out.data);
+                failures++;
+            }
+            json_free(again);
+        }
+        sb_free(&out);
+    }
+    json_free(v);
+
     if (failures == 0) {
         printf("json ok\n");
         return 0;

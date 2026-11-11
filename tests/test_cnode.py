@@ -175,9 +175,15 @@ class LeafTest(unittest.TestCase):
         code, frames, _ = run_cnode([frame(), packet("cnode-1", payload={})])
         self.assertIsNone(frames[-1]["payload"]["t"])
 
-    def test_announce_interval_zero_announces_on_every_ping(self):
+    def test_announces_repeat_on_the_interval(self):
+        # With interval 0 the node announces on every pass of its loop, so the pong
+        # comes among repeated announces. The announce order is not fixed.
         code, frames, _ = run_cnode([frame(), packet("cnode-1")], extra=["--announce-interval", "0"])
-        self.assertEqual(self.kinds(frames), ["hello", "announce", "announce", "pong"])
+        kinds = self.kinds(frames)
+        self.assertEqual(kinds[:2], ["hello", "announce"])
+        self.assertEqual(kinds[-1] in ("pong", "announce"), True)
+        self.assertIn("pong", kinds)
+        self.assertGreater(kinds.count("announce"), 1)
 
     def test_bye_from_peer_closes_cleanly(self):
         code, frames, err = run_cnode([frame(), '{"type": "bye", "reason": "x"}\n', packet("cnode-1")])
@@ -310,6 +316,146 @@ class ListenTest(unittest.TestCase):
         sock.settimeout(5)
         self.assertEqual(reader.readline(), b"")
         sock.close()
+
+
+class FakePeer(object):
+    """A Python peer on a direct link to the C node. It sends and reads frames raw."""
+
+    def __init__(self, port, node):
+        self.node = node
+        self.sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+        self.reader = self.sock.makefile("rb")
+        self.sock.sendall(b"MODE link\n" + (json.dumps(proto.hello(node, "direct")) + "\n").encode("ascii"))
+        self.hello = self.read()
+
+    def send(self, frame):
+        self.sock.sendall((json.dumps(frame) + "\n").encode("ascii"))
+
+    def read(self):
+        return json.loads(self.reader.readline().decode("ascii"))
+
+    def frames(self, wait=1.0):
+        """Every frame that arrives within wait seconds."""
+        out = []
+        self.sock.settimeout(wait)
+        try:
+            while True:
+                line = self.reader.readline()
+                if not line:
+                    break
+                out.append(json.loads(line.decode("ascii")))
+        except (socket.timeout, OSError):
+            pass
+        self.sock.settimeout(5)
+        return out
+
+    def close(self):
+        self.reader.close()
+        self.sock.close()
+
+
+def pkt(src, dst, kind, payload=None, pid=None, ttl=16):
+    return {"type": "packet", "src": src, "dst": dst, "id": pid or proto.new_id(), "ttl": ttl,
+            "kind": kind, "payload": {"t": 1.5} if payload is None else payload}
+
+
+def announce(src, links, seq, pid=None):
+    return pkt(src, "*", "announce", {"seq": seq, "links": links, "features": ["core"]}, pid=pid)
+
+
+@unittest.skipUnless(shutil.which("make") and (shutil.which("cc") or shutil.which("gcc")),
+                     "needs make and a C compiler")
+class RouterTest(unittest.TestCase):
+    """The C node as a router: several direct links, forwarding, replies and dedupe.
+    Peers are fake: P1 and P2 are Python sockets, and far is a node behind P2."""
+
+    @classmethod
+    def setUpClass(cls):
+        subprocess.check_call(["make", "-s", "-C", CNODE_DIR, "cnode"])
+
+    def start(self):
+        self.port = free_port()
+        self.proc = subprocess.Popen([BINARY, "--listen", str(self.port), "--node", "rx",
+                                      "--announce-interval", "3600"],
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            try:
+                socket.create_connection(("127.0.0.1", self.port), timeout=0.5).close()
+                return
+            except socket.error:
+                time.sleep(0.05)
+
+    def setUp(self):
+        self.start()
+        self.p1 = FakePeer(self.port, "p1")
+        self.p2 = FakePeer(self.port, "p2")
+        # p2 announces that it reaches far, and far announces that it reaches p2.
+        self.p2.send(announce("p2", ["rx", "far"], 1))
+        self.p2.send(announce("far", ["p2"], 1))
+        time.sleep(0.5)
+
+    def tearDown(self):
+        self.p1.close()
+        self.p2.close()
+        self.proc.kill()
+        self.proc.wait()
+
+    def test_a_packet_is_forwarded_over_two_hops(self):
+        self.p1.send(pkt("p1", "far", "ping", pid="route-1"))
+        got = [f for f in self.p2.frames() if f.get("id") == "route-1"]
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0]["dst"], "far")
+        self.assertEqual(got[0]["ttl"], 15)
+
+    def test_the_reply_comes_back_the_same_way(self):
+        self.p2.send(pkt("far", "p1", "pong", {"t": 2.5}, pid="back-1"))
+        got = [f for f in self.p1.frames() if f.get("id") == "back-1"]
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0]["dst"], "p1")
+
+    def test_a_ping_to_the_node_itself_is_answered_on_its_link(self):
+        self.p1.send(pkt("p1", "rx", "ping", {"t": 9.0}, pid="self-1"))
+        got = self.p1.frames()
+        self.assertEqual([f["kind"] for f in got if f.get("src") == "rx" and f["kind"] == "pong"], ["pong"])
+
+    def test_a_duplicate_is_forwarded_once(self):
+        for _ in range(3):
+            self.p1.send(pkt("p1", "far", "ping", pid="dup-1"))
+        got = [f for f in self.p2.frames() if f.get("id") == "dup-1"]
+        self.assertEqual(len(got), 1)
+
+    def test_multicast_goes_on_and_is_answered_locally(self):
+        self.p1.send(pkt("p1", ["far", "rx"], "ping", pid="multi-1"))
+        forwarded = [f for f in self.p2.frames() if f.get("id") == "multi-1"]
+        self.assertEqual(len(forwarded), 1)
+        self.assertEqual(forwarded[0]["dst"], ["far"])
+        answers = [f for f in self.p1.frames() if f.get("kind") == "pong" and f.get("src") == "rx"]
+        self.assertEqual(len(answers), 1)
+
+    def test_a_flood_is_relayed_to_the_other_links(self):
+        self.p2.send(announce("far2", ["p2"], 1, pid="flood-1"))
+        got = [f for f in self.p1.frames() if f.get("id") == "flood-1"]
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0]["ttl"], 15)
+
+    def test_no_route_means_no_forwarding(self):
+        self.p1.send(pkt("p1", "nowhere", "ping", pid="lost-1"))
+        self.assertEqual([f for f in self.p2.frames() + self.p1.frames() if f.get("id") == "lost-1"], [])
+
+    def test_ttl_one_is_not_forwarded(self):
+        self.p1.send(pkt("p1", "far", "ping", pid="last-1", ttl=1))
+        self.assertEqual([f for f in self.p2.frames() if f.get("id") == "last-1"], [])
+
+    def test_a_reconnected_peer_replaces_the_old_link(self):
+        self.p2.close()
+        self.p2 = FakePeer(self.port, "p2")
+        self.p2.send(announce("p2", ["rx", "far"], 2))
+        time.sleep(0.5)
+        self.p1.send(pkt("p1", "far", "ping", pid="again-1"))
+        got = [f for f in self.p2.frames() if f.get("id") == "again-1"]
+        self.assertEqual(len(got), 1)
+
 
 
 if __name__ == "__main__":

@@ -30,47 +30,6 @@ int cn_listen_loopback(int port)
     return fd;
 }
 
-int cn_accept(int lfd, FILE **in, FILE **out)
-{
-    int fd, out_fd;
-
-    *in = NULL;
-    *out = NULL;
-    fd = accept(lfd, NULL, NULL);
-    if (fd < 0) {
-        return -1;
-    }
-    out_fd = dup(fd);
-    if (out_fd < 0) {
-        close(fd);
-        return -1;
-    }
-    *in = fdopen(fd, "r");
-    *out = fdopen(out_fd, "w");
-    if (*in == NULL || *out == NULL) {
-        if (*in != NULL) {
-            fclose(*in);
-        } else {
-            close(fd);
-        }
-        if (*out != NULL) {
-            fclose(*out);
-        } else {
-            close(out_fd);
-        }
-        *in = NULL;
-        *out = NULL;
-        return -1;
-    }
-    return 0;
-}
-
-void cn_close(FILE *in, FILE *out)
-{
-    fclose(in);
-    fclose(out);
-}
-
 void cn_ignore_sigpipe(void)
 {
     signal(SIGPIPE, SIG_IGN);

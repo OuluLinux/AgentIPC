@@ -1,4 +1,5 @@
 /* Minimal JSON reader for wire frames. C89, no dependencies. */
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -57,6 +58,27 @@ static int hex_digit(int c)
     return -1;
 }
 
+/* Writes code point cp as UTF-8 at w. Returns the position after it. */
+static char *put_utf8(char *w, long cp)
+{
+    if (cp < 0x80) {
+        *w++ = (char)cp;
+    } else if (cp < 0x800) {
+        *w++ = (char)(0xC0 | (cp >> 6));
+        *w++ = (char)(0x80 | (cp & 0x3F));
+    } else if (cp < 0x10000) {
+        *w++ = (char)(0xE0 | (cp >> 12));
+        *w++ = (char)(0x80 | ((cp >> 6) & 0x3F));
+        *w++ = (char)(0x80 | (cp & 0x3F));
+    } else {
+        *w++ = (char)(0xF0 | (cp >> 18));
+        *w++ = (char)(0x80 | ((cp >> 12) & 0x3F));
+        *w++ = (char)(0x80 | ((cp >> 6) & 0x3F));
+        *w++ = (char)(0x80 | (cp & 0x3F));
+    }
+    return w;
+}
+
 /* Parses a string starting at the opening quote. Returns a malloc'd copy. */
 static char *parse_string(parser *ps)
 {
@@ -112,9 +134,24 @@ static char *parse_string(parser *ps)
                 }
                 code = code * 16 + d;
             }
-            /* Node names and kinds are ASCII. Other code points become '?'. */
-            *w++ = (code < 0x80) ? (char)code : '?';
             ps->p += 4;
+            if (code >= 0xD800 && code <= 0xDBFF && ps->end - ps->p >= 7 &&
+                ps->p[1] == '\\' && ps->p[2] == 'u') {
+                /* A surrogate pair: combine with the low half that follows. */
+                int low = 0, k;
+                for (k = 3; k <= 6; k++) {
+                    int d = hex_digit((unsigned char)ps->p[k]);
+                    if (d < 0) {
+                        break;
+                    }
+                    low = low * 16 + d;
+                }
+                if (k == 7 && low >= 0xDC00 && low <= 0xDFFF) {
+                    code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                    ps->p += 6;
+                }
+            }
+            w = put_utf8(w, code);
             break;
         }
         default:
@@ -341,4 +378,166 @@ const jval *json_get(const jval *obj, const char *key)
         if (strcmp(obj->keys[i], key) == 0) return obj->items[i];
     }
     return NULL;
+}
+
+int sb_add(sbuf *b, const char *s, size_t n)
+{
+    if (b->len + n + 1 > b->cap) {
+        size_t cap = (b->cap == 0) ? 256 : b->cap;
+        char *grown;
+        while (b->len + n + 1 > cap) {
+            cap *= 2;
+        }
+        grown = realloc(b->data, cap);
+        if (grown == NULL) {
+            return -1;
+        }
+        b->data = grown;
+        b->cap = cap;
+    }
+    memcpy(b->data + b->len, s, n);
+    b->len += n;
+    b->data[b->len] = '\0';
+    return 0;
+}
+
+int sb_adds(sbuf *b, const char *s)
+{
+    return sb_add(b, s, strlen(s));
+}
+
+void sb_free(sbuf *b)
+{
+    free(b->data);
+    b->data = NULL;
+    b->len = 0;
+    b->cap = 0;
+}
+
+/* Decodes one UTF-8 sequence at s. Sets *cp and returns its length. Invalid bytes
+   give U+FFFD and length 1. */
+static size_t get_utf8(const unsigned char *s, size_t avail, long *cp)
+{
+    size_t need;
+    long value;
+    size_t i;
+
+    if (s[0] < 0x80) {
+        *cp = s[0];
+        return 1;
+    }
+    if (s[0] >= 0xC2 && s[0] < 0xE0) {
+        need = 1; value = s[0] & 0x1F;
+    } else if (s[0] >= 0xE0 && s[0] < 0xF0) {
+        need = 2; value = s[0] & 0x0F;
+    } else if (s[0] >= 0xF0 && s[0] < 0xF5) {
+        need = 3; value = s[0] & 0x07;
+    } else {
+        *cp = 0xFFFD;
+        return 1;
+    }
+    if (avail < need + 1) {
+        *cp = 0xFFFD;
+        return 1;
+    }
+    for (i = 1; i <= need; i++) {
+        if ((s[i] & 0xC0) != 0x80) {
+            *cp = 0xFFFD;
+            return 1;
+        }
+        value = (value << 6) | (s[i] & 0x3F);
+    }
+    *cp = value;
+    return need + 1;
+}
+
+static int write_string(sbuf *b, const char *s, size_t len)
+{
+    const unsigned char *p = (const unsigned char *)s;
+    char esc[32];
+    size_t i = 0, n;
+    long cp;
+
+    if (sb_adds(b, "\"") < 0) {
+        return -1;
+    }
+    while (i < len) {
+        if (p[i] >= 0x80) {
+            n = get_utf8(p + i, len - i, &cp);
+            i += n;
+            if (cp >= 0x10000) {
+                long v = cp - 0x10000;
+                sprintf(esc, "\\u%04lx\\u%04lx", 0xD800 + (v >> 10), 0xDC00 + (v & 0x3FF));
+            } else {
+                sprintf(esc, "\\u%04lx", cp);
+            }
+            if (sb_adds(b, esc) < 0) return -1;
+            continue;
+        }
+        i++;
+        switch (p[i - 1]) {
+        case '"': if (sb_adds(b, "\\\"") < 0) return -1; break;
+        case '\\': if (sb_adds(b, "\\\\") < 0) return -1; break;
+        case '\n': if (sb_adds(b, "\\n") < 0) return -1; break;
+        case '\r': if (sb_adds(b, "\\r") < 0) return -1; break;
+        case '\t': if (sb_adds(b, "\\t") < 0) return -1; break;
+        case '\b': if (sb_adds(b, "\\b") < 0) return -1; break;
+        case '\f': if (sb_adds(b, "\\f") < 0) return -1; break;
+        default:
+            if (p[i - 1] < 0x20) {
+                sprintf(esc, "\\u%04x", (unsigned)p[i - 1]);
+                if (sb_adds(b, esc) < 0) return -1;
+            } else if (sb_add(b, (const char *)p + i - 1, 1) < 0) {
+                return -1;
+            }
+        }
+    }
+    return sb_adds(b, "\"");
+}
+
+int json_write_string(sbuf *b, const char *s)
+{
+    return write_string(b, s, strlen(s));
+}
+
+int json_write(sbuf *b, const jval *v)
+{
+    size_t i;
+    char num[40];
+
+    switch (v->type) {
+    case J_NULL:
+        return sb_adds(b, "null");
+    case J_BOOL:
+        return sb_adds(b, v->boolean ? "true" : "false");
+    case J_NUM:
+        if (v->num - v->num != 0.0) {
+            return sb_adds(b, "null");          /* not finite */
+        }
+        if (v->num == (double)(long)v->num && v->num > -1e15 && v->num < 1e15) {
+            sprintf(num, "%ld", (long)v->num);
+        } else {
+            sprintf(num, "%.17g", v->num);
+        }
+        return sb_adds(b, num);
+    case J_STR:
+        return write_string(b, v->str, strlen(v->str));
+    case J_ARR:
+        if (sb_adds(b, "[") < 0) return -1;
+        for (i = 0; i < v->n; i++) {
+            if (i > 0 && sb_adds(b, ", ") < 0) return -1;
+            if (json_write(b, v->items[i]) < 0) return -1;
+        }
+        return sb_adds(b, "]");
+    case J_OBJ:
+        if (sb_adds(b, "{") < 0) return -1;
+        for (i = 0; i < v->n; i++) {
+            if (i > 0 && sb_adds(b, ", ") < 0) return -1;
+            if (write_string(b, v->keys[i], strlen(v->keys[i])) < 0) return -1;
+            if (sb_adds(b, ": ") < 0) return -1;
+            if (json_write(b, v->items[i]) < 0) return -1;
+        }
+        return sb_adds(b, "}");
+    }
+    return -1;
 }
