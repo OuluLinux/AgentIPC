@@ -42,6 +42,7 @@ def _shutdown(sock):
 
 
 TOKEN_FILE = "control.token"
+PRUNE_INTERVAL = 3600      # seconds between retention passes
 
 
 def control_token(home):
@@ -80,7 +81,8 @@ class Daemon(object):
         self.listen_port = None
         self.authority = auth.install(
             self.node, auth.Accounts(os.path.join(home, "accounts.json")) if self.node.is_authority() else None)
-        self.vs = vserver.VirtualServer(self.node, os.path.join(home, "mesh", "records.jsonl"))
+        self.vs = vserver.VirtualServer(self.node, os.path.join(home, "mesh", "records.jsonl"),
+                                        keep_days=cfg.get("retention_days"))
         self.files = files.FileService(self.node, os.path.join(home, "inbox"))
         self.shell = shell.ShellService(self.node, cfg.get("shell"))
         self._stopping = threading.Event()
@@ -90,6 +92,9 @@ class Daemon(object):
 
     def start(self):
         self.node.start()
+        if self.vs.records.keep_days:
+            self.vs.prune()
+            _thread(self._prune_loop)
         self._listen_control()
         if self.cfg.get("allow") and self.cfg.get("listen"):
             self._listen_direct()
@@ -100,6 +105,12 @@ class Daemon(object):
                 _thread(self._direct_dialer, peer)
             else:
                 log("ignoring peer with unknown kind %r" % peer.get("kind"))
+
+    def _prune_loop(self):
+        while not self._stopping.wait(PRUNE_INTERVAL):
+            removed = self.vs.prune()
+            if removed:
+                log("retention dropped %d records" % removed)
 
     def stop(self):
         self._stopping.set()

@@ -30,6 +30,7 @@ Live messages arrive as MSG {json} with "kind": "live".
 import json
 import os
 import threading
+import time
 
 from agentipc import auth, files, proto
 from agentipc.store import utcnow
@@ -46,11 +47,22 @@ WRITE_FLUSH_TIMEOUT = 10.0
 CLIENT_PROTOCOL_VERSION = 1
 
 
-class RecordStore(object):
-    """Channel records from every origin, kept in an append-only JSON-lines file."""
+def cutoff_for(days, now=None):
+    """The oldest record time kept, as a UTC timestamp in the same format as records."""
+    now = time.time() if now is None else now
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - days * 86400))
 
-    def __init__(self, path):
+
+class RecordStore(object):
+    """Channel records from every origin, kept in an append-only JSON-lines file.
+
+    With keep_days set, records older than that are not stored, and prune() drops them.
+    Every node uses the same rule, so an expired record that a peer still has is
+    refused when it is sent again."""
+
+    def __init__(self, path, keep_days=None):
         self.path = path
+        self.keep_days = keep_days
         self.records = []
         self.keys = set()
         if path and os.path.exists(path):
@@ -64,8 +76,10 @@ class RecordStore(object):
         self.records.append(rec)
 
     def add(self, rec):
-        """Returns True if the record was new."""
+        """Returns True if the record was new and is kept."""
         if (rec["origin"], rec["oseq"]) in self.keys:
+            return False
+        if self.keep_days and rec["ts"] < cutoff_for(self.keep_days):
             return False
         self._remember(rec)
         if self.path:
@@ -75,6 +89,25 @@ class RecordStore(object):
             with open(self.path, "a") as fh:
                 fh.write(json.dumps(rec, sort_keys=True) + "\n")
         return True
+
+    def prune(self, now=None):
+        """Drops records older than keep_days and rewrites the file. Returns how many went."""
+        if not self.keep_days:
+            return 0
+        cut = cutoff_for(self.keep_days, now)
+        kept = [r for r in self.records if r["ts"] >= cut]
+        removed = len(self.records) - len(kept)
+        if removed == 0:
+            return 0
+        self.records = kept
+        self.keys = set((r["origin"], r["oseq"]) for r in kept)
+        if self.path:
+            tmp = self.path + ".tmp"
+            with open(tmp, "w") as fh:
+                for rec in kept:
+                    fh.write(json.dumps(rec, sort_keys=True) + "\n")
+            os.rename(tmp, self.path)
+        return removed
 
     def channel(self, server, chan):
         found = [r for r in self.records if r["server"] == server and r["chan"] == chan]
@@ -113,9 +146,9 @@ def _str(payload, *keys):
 
 
 class VirtualServer(object):
-    def __init__(self, node, records_path=None):
+    def __init__(self, node, records_path=None, keep_days=None):
         self.node = node
-        self.records = RecordStore(records_path)
+        self.records = RecordStore(records_path, keep_days)
         self.members = set()      # (server, chan, user, node)
         self.sessions = set()
         node.register("membership", self._h_membership)
@@ -123,6 +156,11 @@ class VirtualServer(object):
         node.register("sync", self._h_sync)
         node.register("history", self._h_history)
         node.add_service(self)
+
+    def prune(self):
+        """Applies the retention rule now. Returns how many records were dropped."""
+        with self.node.lock:
+            return self.records.prune()
 
     # ----- gossip ------------------------------------------------------
 

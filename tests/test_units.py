@@ -337,3 +337,37 @@ class RecordNumberTest(unittest.TestCase):
         time.sleep(0.01)
         after = Node("A")
         self.assertGreater(after.next_oseq(), last)
+
+
+class RetentionTest(unittest.TestCase):
+    def rec(self, oseq, ts):
+        return {"origin": "A", "oseq": oseq, "server": "s", "chan": "general", "user": "u",
+                "body": "x", "ts": ts}
+
+    def test_old_records_are_refused_and_pruned(self):
+        from agentipc import vserver
+        now = time.time()
+        path = os.path.join(tempfile.mkdtemp(), "records.jsonl")
+        store = vserver.RecordStore(path, keep_days=7)
+        old = vserver.cutoff_for(30, now)
+        fresh = vserver.cutoff_for(1, now)
+        self.assertFalse(store.add(self.rec(1, old)))
+        self.assertTrue(store.add(self.rec(2, fresh)))
+        # Stored before retention was set: prune drops it, and the file is rewritten.
+        store.keep_days = None
+        store.add(self.rec(3, old))
+        store.keep_days = 7
+        self.assertEqual(store.prune(now), 1)
+        self.assertEqual([r["oseq"] for r in store.records], [2])
+        reloaded = vserver.RecordStore(path, keep_days=7)
+        self.assertEqual([r["oseq"] for r in reloaded.records], [2])
+
+    def test_retention_off_keeps_everything(self):
+        from agentipc import vserver
+        store = vserver.RecordStore(None)
+        self.assertTrue(store.add(self.rec(1, "2001-01-01T00:00:00Z")))
+        self.assertEqual(store.prune(), 0)
+
+    def test_cutoff_format_matches_record_timestamps(self):
+        from agentipc import vserver
+        self.assertEqual(vserver.cutoff_for(1, 0), "1969-12-31T00:00:00Z")

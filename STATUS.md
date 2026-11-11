@@ -66,7 +66,7 @@ three-hop chain, direct triangle, node loss and recovery, shell on all nodes.
 - **Inbox folders.** Received files go in `user@node`, where `node` is where the upload entered the mesh. That is not always the machine the file came from.
 - **Shell access is broad.** Any user on a node's `shell.users` list runs arbitrary commands as that node's user. Keep lists short.
 - **Plain servers expose messages to relays.** Message bodies on a plain server are readable by every node that carries them.
-- **Store grows.** Channel records and membership are never pruned.
+- **Membership is not pruned.** Channel records can be pruned with `retention_days`; membership is current state and is kept.
 - **Python 2.7 untested.** See above.
 
 ## Test environment notes

@@ -260,6 +260,13 @@ sent after the mode: `MODE link SECRET` or `MODE client SECRET`. Other local
 users cannot read it, so they cannot open links or client sessions. The direct
 listener is not affected: it uses the allowlist instead.
 
+## Retention
+
+`retention_days` in a node's config keeps channel records for that many days
+(off when unset). Each node drops older records at startup and hourly, and refuses
+older records when a peer sends them again, so a pruned record does not come back
+through sync. Membership is not pruned: it is current state.
+
 ## Feature gate
 Announces carry the node's `features`. Before a unicast send, the sender skips
 any node that announced its features and lacks the one the kind needs
