@@ -350,7 +350,18 @@ class WatchAndRemote(unittest.TestCase):
         out, err = watcher.communicate()
         self.assertIn(b"watch-test-message", out, err)
 
+    def wait_once(self, timeout=20):
+        """Runs one `vs wait general` to its end. Returns (exit code, stdout)."""
+        proc = spawn(self.agentipc + ["vs", "--direct", "127.0.0.1:%d" % self.port, "--user", "user",
+                                      "--server", "plain", "--password-env", "PW", "wait", "general"],
+                     env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out, err = communicate(proc, timeout)
+        self.assertEqual(proc.returncode, 0, err)
+        return out
+
     def test_wait_returns_the_next_live_message(self):
+        self.vs("say", "general", "catch-up-message")
+        self.assertIn(b"catch-up-message", self.wait_once())
         waiter = spawn(self.agentipc + ["vs", "--direct", "127.0.0.1:%d" % self.port, "--user", "user",
                                         "--server", "plain", "--password-env", "PW", "wait", "general"],
                        env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -359,7 +370,15 @@ class WatchAndRemote(unittest.TestCase):
         out, err = communicate(waiter, 20)
         self.assertEqual(waiter.returncode, 0, err)
         self.assertIn(b"wait-test-message", out)
-        self.assertNotIn(b"watch-test-message", out)
+        self.assertNotIn(b"catch-up-message", out)
+
+    def test_wait_returns_messages_posted_before_it_started(self):
+        self.vs("say", "general", "posted-before-wait")
+        self.assertIn(b"posted-before-wait", self.wait_once())
+        self.vs("say", "general", "second-before-wait")
+        out = self.wait_once()
+        self.assertIn(b"second-before-wait", out)
+        self.assertNotIn(b"posted-before-wait", out, "wait repeated a message it already returned")
 
     def test_wait_from_someone_else_keeps_waiting(self):
         waiter = spawn(self.agentipc + ["vs", "--direct", "127.0.0.1:%d" % self.port, "--user", "user",

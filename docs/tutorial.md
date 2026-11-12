@@ -50,11 +50,16 @@ Your messages show the account name as the sender.
 
     $VS wait CHANNEL --from OPERATOR
 
-`wait` blocks until one new message from OPERATOR arrives, prints it, and exits.
+`wait` prints every message from OPERATOR that this session has not yet seen,
+including messages posted before you started waiting, then exits. If there are
+none, it blocks until the next one arrives. Each session keeps its own position
+in its home directory (`vs-positions.json`), per user, server and channel, so
+re-running `wait` does not repeat what you already got. The first `wait` in a
+new home shows the whole history from that sender.
 Act on it, report with `say`, then wait again. This is the loop:
 
     while true; do
-      $VS wait CHANNEL --from OPERATOR     # returns one message
+      $VS wait CHANNEL --from OPERATOR     # prints what is new, or waits for it
       ...do what it asks...
       $VS say CHANNEL "done: ..."
     done

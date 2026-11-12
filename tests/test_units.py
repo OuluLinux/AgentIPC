@@ -13,7 +13,7 @@ import threading
 import time
 import unittest
 
-from agentipc import auth, cli, crypto, daemon, files, linkcrypt, proto
+from agentipc import auth, cli, crypto, daemon, files, linkcrypt, positions, proto
 from agentipc.node import Node
 from agentipc.routing import SeenCache, Topology
 from agentipc.vserver import RecordStore, valid_record
@@ -639,3 +639,42 @@ class StatusTest(unittest.TestCase):
         st = d.status()
         self.assertEqual(st["epoch"], 4)
         self.assertFalse(st["file_matches_claim"])
+
+
+class PositionTest(unittest.TestCase):
+    """vs wait: what a session has seen is kept per origin, and survives a save and load."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def rec(self, origin, oseq):
+        return {"origin": origin, "oseq": oseq, "user": "alice", "body": "m%d" % oseq}
+
+    def test_first_wait_sees_everything_then_only_new(self):
+        history = [self.rec("gen7", 1), self.rec("mg", 1), self.rec("gen7", 2)]
+        have = {}
+        pending = [r for r in history if positions.unseen(r, have)]
+        for r in history:
+            positions.advance(have, r)
+        self.assertEqual(len(pending), 3)
+        history = history + [self.rec("mg", 2)]
+        pending = [r for r in history if positions.unseen(r, have)]
+        self.assertEqual([(r["origin"], r["oseq"]) for r in pending], [("mg", 2)])
+
+    def test_position_is_saved_per_user_server_and_channel(self):
+        store = positions.load(self.dir)
+        self.assertEqual(store, {})
+        key = positions.key("s2", "skylark", "#SKYLARK-MANAGER")
+        self.assertEqual(key, "s2@skylark#skylark-manager")
+        positions.save(self.dir, {key: {"gen7": 2}})
+        self.assertEqual(positions.load(self.dir)[key], {"gen7": 2})
+        mode = stat.S_IMODE(os.stat(os.path.join(self.dir, positions.POSITIONS_FILE)).st_mode)
+        self.assertEqual(mode, 0o600)
+
+    def test_damaged_position_file_starts_fresh(self):
+        with open(os.path.join(self.dir, positions.POSITIONS_FILE), "w") as fh:
+            fh.write("not json")
+        self.assertEqual(positions.load(self.dir), {})

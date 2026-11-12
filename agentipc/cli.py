@@ -15,7 +15,7 @@ import subprocess
 import sys
 import threading
 
-from agentipc import auth, client, config as config_mod, crypto, linkcrypt
+from agentipc import auth, client, config as config_mod, crypto, linkcrypt, positions
 from agentipc.daemon import DEFAULT_CONTROL_PORT, TOKEN_FILE, Daemon, control_token
 from agentipc.store import Store, StoreError, check_agent
 
@@ -412,13 +412,32 @@ def cmd_vs(args, ctx):
                 if rec is not None:
                     print_message(rec)
         elif args.action == "wait":
-            # Blocks until one live message arrives (from --from, if given). History is skipped.
-            session.join(args.channel)
-            while True:
-                rec = session.next_message()
-                if rec is not None and (args.sender is None or rec.get("user") == args.sender):
+            # Prints every message not yet seen by this session (from --from, if given), history
+            # included, then exits. With nothing pending, blocks for the next live one. Positions
+            # are kept in the session home, per user, server and channel.
+            pkey = positions.key(args.user, args.server, args.channel)
+            store = positions.load(ctx.home)
+            have = store.get(pkey, {})
+            pending = []
+            for rec in session.join(args.channel):
+                if positions.unseen(rec, have):
+                    positions.advance(have, rec)
+                    if args.sender is None or rec.get("user") == args.sender:
+                        pending.append(rec)
+            if pending:
+                for rec in pending:
                     print_message(rec)
-                    break
+            else:
+                while True:
+                    rec = session.next_message()
+                    if rec is None:
+                        continue
+                    positions.advance(have, rec)
+                    if args.sender is None or rec.get("user") == args.sender:
+                        print_message(rec)
+                        break
+            store[pkey] = have
+            positions.save(ctx.home, store)
         elif args.action == "say":
             session.join(args.channel)
             seq, _ = session.say(args.channel, " ".join(args.text))
@@ -551,7 +570,7 @@ def build_parser():
     for name in ("read", "watch", "names"):
         a = actions.add_parser(name)
         a.add_argument("channel")
-    a = actions.add_parser("wait", help="block until a new message arrives, print it, exit")
+    a = actions.add_parser("wait", help="print messages not yet seen by this session, or block for the next one, then exit")
     a.add_argument("channel")
     a.add_argument("--from", dest="sender", help="only messages from this user")
     a = actions.add_parser("say")
