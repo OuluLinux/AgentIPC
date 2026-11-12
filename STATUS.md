@@ -62,7 +62,7 @@ three-hop chain, direct triangle, node loss and recovery, shell on all nodes.
 
 ## Known gaps
 
-- **Single authority.** If the authority node is down, logins and token checks fail. No failover.
+- **Manual authority failover.** The accounts are copied to a standby over ssh within 5 s of a change. If the authority is down, `account promote` on the standby and a restart take over. Changes made after the last copy are lost. No automatic failover (see DESIGN.md, "Authority failover").
 - **Inbox folders.** Received files go in `user@node`, where `node` is where the upload entered the mesh. That is not always the machine the file came from.
 - **Shell access is broad.** Any user on a node's `shell.users` list runs arbitrary commands as that node's user. Keep lists short.
 - **Plain servers expose messages to relays.** Message bodies on a plain server are readable by every node that carries them.

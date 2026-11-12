@@ -71,7 +71,7 @@ class Daemon(object):
     def __init__(self, node_id, cfg, home):
         self.cfg = cfg
         self.home = home
-        self.node = Node(node_id, authority=cfg.get("authority"))
+        self.node = Node(node_id, authority=cfg.get("authority"), standby=cfg.get("standby"))
         # Timers can be tuned per node. Keys are seconds.
         for key in ("ping_interval", "announce_interval", "node_timeout", "alive_timeout"):
             if key in cfg:
@@ -79,8 +79,14 @@ class Daemon(object):
         self.control_port = cfg.get("control_port", DEFAULT_CONTROL_PORT)
         self.control_secret = control_token(home)
         self.listen_port = None
-        self.authority = auth.install(
-            self.node, auth.Accounts(os.path.join(home, "accounts.json")) if self.node.is_authority() else None)
+        accounts_path = os.path.join(home, "accounts.json")
+        accounts = None
+        if os.path.exists(accounts_path) or self.node.is_authority():
+            accounts = auth.Accounts(accounts_path)
+            if not accounts.data.get("authority"):
+                accounts.data["authority"] = node_id
+            self.node.set_claim(accounts.data["authority"], accounts.data["epoch"])
+        self.authority = auth.install(self.node, accounts, os.path.join(home, auth.REPLICA_FILE))
         self.vs = vserver.VirtualServer(self.node, os.path.join(home, "mesh", "records.jsonl"),
                                         keep_days=cfg.get("retention_days"))
         self.files = files.FileService(self.node, os.path.join(home, "inbox"))
@@ -92,6 +98,8 @@ class Daemon(object):
 
     def start(self):
         self.node.start()
+        if self.node.standby:
+            _thread(self._replica_loop)
         if self.vs.records.keep_days:
             self.vs.prune()
             _thread(self._prune_loop)
@@ -188,6 +196,10 @@ class Daemon(object):
                 _shutdown(conn)
         else:
             _shutdown(conn)
+
+    def _replica_loop(self):
+        while not self._stopping.wait(auth.REPLICA_INTERVAL):
+            self.authority.replicate_once()
 
     # ----- dialers -----------------------------------------------------
 

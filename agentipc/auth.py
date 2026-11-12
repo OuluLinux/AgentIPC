@@ -9,6 +9,12 @@ accounts file must stay private.
 
 Tokens are HMAC-signed by the authority. Other nodes verify them by asking the
 authority, and cache the answer until the token expires.
+
+Failover (manual, see DESIGN.md "Authority failover"): the authority copies its
+accounts to a standby over ssh links only. The standby keeps the copy as a
+replica. `account promote` on the standby turns the replica into the accounts
+with the next epoch. Nodes follow the highest epoch they hear in announces, so
+the old authority steps down when it sees the new one.
 """
 
 import binascii
@@ -21,6 +27,8 @@ import time
 from agentipc import crypto, proto
 
 ITERATIONS = 100000
+REPLICA_INTERVAL = 5.0   # seconds between checks for accounts to copy to the standby
+REPLICA_FILE = "accounts.replica.json"
 CHALLENGE_TTL = 60
 VERIFY_TIMEOUT = 20.0    # seconds to wait for the authority to answer a token check
 TOKEN_TTL = 3600
@@ -50,7 +58,8 @@ class Accounts(object):
 
     def __init__(self, path):
         self.path = path
-        self.data = {"secret": hexlify(os.urandom(32)), "users": {}, "servers": {}}
+        self.data = {"secret": hexlify(os.urandom(32)), "users": {}, "servers": {},
+                     "authority": None, "epoch": 0, "rev": 0}
         self._mtime = None
         self._refresh()
 
@@ -62,16 +71,16 @@ class Accounts(object):
         if mtime != self._mtime:
             with open(self.path) as fh:
                 self.data = json.load(fh)
+            # Files from before failover had no authority, epoch or rev.
+            self.data.setdefault("authority", None)
+            self.data.setdefault("epoch", 0)
+            self.data.setdefault("rev", 0)
             self._mtime = mtime
 
     def save(self):
         self._refresh()
-        directory = os.path.dirname(self.path)
-        if directory and not os.path.isdir(directory):
-            os.makedirs(directory)
-        fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as fh:
-            fh.write(json.dumps(self.data, indent=2, sort_keys=True) + "\n")
+        self.data["rev"] = self.data.get("rev", 0) + 1
+        write_private(self.path, self.data)
         self._mtime = os.path.getmtime(self.path)
 
     def add_user(self, user, password):
@@ -108,6 +117,45 @@ class Accounts(object):
         return hmac.new(self.secret(), ("salt:" + user).encode("utf-8"), hashlib.sha256).digest()[:16]
 
 
+def write_private(path, data):
+    """Write JSON atomically, readable by its owner only."""
+    directory = os.path.dirname(path)
+    if directory and not os.path.isdir(directory):
+        os.makedirs(directory)
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    os.rename(tmp, path)
+
+
+def read_replica(path):
+    """The stored replica as {'authority', 'epoch', 'rev', 'data'}, or None."""
+    if not os.path.exists(path):
+        return None
+    with open(path) as fh:
+        return json.load(fh)
+
+
+def promote(replica_path, accounts_path, node_id):
+    """Make node_id the authority from the stored replica. Returns the new epoch.
+
+    Refuses when this node already holds the accounts as authority. The new epoch
+    is one more than the highest epoch in the replica or in the local accounts."""
+    replica = read_replica(replica_path)
+    if replica is None:
+        raise ValueError("no replica to promote from")
+    current = Accounts(accounts_path)
+    if current.data.get("authority") == node_id:
+        raise ValueError("this node is already the authority")
+    data = dict(replica["data"])
+    epoch = max(replica["epoch"], current.data.get("epoch", 0)) + 1
+    data.update({"authority": node_id, "epoch": epoch})
+    current.data = data
+    current.save()
+    return epoch
+
+
 def make_token(accounts, user, server, expires):
     payload = ("%s|%s|%d" % (user, server, expires)).encode("utf-8")
     mac = hmac.new(accounts.secret(), payload, hashlib.sha256).hexdigest()
@@ -132,25 +180,44 @@ def parse_token(accounts, token, now=None):
 
 
 class Authority(object):
-    """Answers login and verify requests. Installed only on the authority node."""
+    """Login, verify and replica handling. Every node has one; it answers
+    login and verify only while it is the authority (it holds accounts and is the
+    node the claim names). The others hold a replica and forward nothing."""
 
-    def __init__(self, node, accounts):
+    def __init__(self, node, accounts=None, replica_path=None):
         self.node = node
         self.accounts = accounts
+        self.replica_path = replica_path
         self.challenges = {}      # (requester, req) -> pending challenge
+        self.sent = None          # (link, rev) of the last replica sent to the standby
         node.register("login-start", self._h_login_start)
         node.register("login-proof", self._h_login_proof)
         node.register("verify", self._h_verify)
+        node.register_link("replica", self._h_replica)
         node.add_service(self)
+        node.on_claim = self._on_claim
+
+    def is_authority(self):
+        return self.accounts is not None and self.node.is_authority()
 
     def _reply(self, dst, kind, req, body):
         body = dict(body, req=req)
         self.node.send(dst, kind, body)
 
+    def _on_claim(self, name, epoch):
+        """A higher claim names another authority: record it, so this node's CLI refuses writes."""
+        if self.accounts is not None:
+            self.accounts.data["authority"] = name
+            self.accounts.data["epoch"] = epoch
+            self.accounts.save()
+
     def _h_login_start(self, pkt):
         payload = pkt["payload"]
         req, user, server = payload.get("req"), payload.get("user"), payload.get("server")
         if not (req and isinstance(user, proto.string_types) and isinstance(server, proto.string_types)):
+            return
+        if not self.is_authority():
+            self._reply(pkt["src"], "login-result", req, {"ok": False, "reason": "not-authority"})
             return
         if self.accounts.server(server) is None:
             self._reply(pkt["src"], "login-result", req, {"ok": False, "reason": "unknown-server"})
@@ -174,6 +241,9 @@ class Authority(object):
         payload = pkt["payload"]
         req, proof = payload.get("req"), payload.get("proof")
         challenge = self.challenges.pop((pkt["src"], req), None)
+        if not self.is_authority():
+            self._reply(pkt["src"], "login-result", req, {"ok": False, "reason": "not-authority"})
+            return
         if challenge is None or time.time() > challenge["until"]:
             self._reply(pkt["src"], "login-result", req, {"ok": False, "reason": "expired"})
             return
@@ -203,6 +273,9 @@ class Authority(object):
     def _h_verify(self, pkt):
         req = pkt["payload"].get("req")
         token = pkt["payload"].get("token")
+        if not self.is_authority():
+            self._reply(pkt["src"], "verify-result", req, {"ok": False})
+            return
         info = parse_token(self.accounts, token) if isinstance(token, proto.string_types) else None
         if info is None or self.accounts.user(info["user"]) is None:
             self._reply(pkt["src"], "verify-result", req, {"ok": False})
@@ -219,7 +292,42 @@ class Authority(object):
         pass
 
 
-def install(node, accounts=None):
+    def replicate_once(self):
+        """Send the accounts to the standby, if this node is the authority, the standby
+        has an ssh link to us, and the accounts changed since the last send."""
+        if not self.is_authority() or not self.node.standby:
+            return
+        with self.node.lock:
+            link = self.node.ssh_link_to(self.node.standby)
+            if link is None:
+                return
+            rev = self.accounts.data["rev"]
+            if self.sent == (link, rev):
+                return
+            self.node.send_on(link, self.node.standby, "replica", {
+                "authority": self.node.id, "epoch": self.accounts.data["epoch"],
+                "rev": rev, "data": self.accounts.data})
+            self.sent = (link, rev)
+
+    def _h_replica(self, pkt, link):
+        """Keep a copy of the authority's accounts. Only from its ssh link, and only newer ones."""
+        payload = pkt["payload"]
+        if self.is_authority() or link.kind != "ssh" or pkt["src"] != self.node.authority:
+            return
+        if payload.get("authority") != pkt["src"] or not isinstance(payload.get("data"), dict):
+            return
+        epoch, rev = payload.get("epoch"), payload.get("rev")
+        if not isinstance(epoch, int) or not isinstance(rev, int):
+            return
+        stored = read_replica(self.replica_path) if self.replica_path else None
+        if stored is not None and (epoch, rev) <= (stored["epoch"], stored["rev"]):
+            return
+        if self.replica_path:
+            write_private(self.replica_path, {"authority": pkt["src"], "epoch": epoch, "rev": rev,
+                                              "data": payload["data"]})
+
+
+def install(node, accounts=None, replica_path=None):
     """Give a node the reply handlers, and the authority role if accounts is given."""
     node.token_cache = {}
 
@@ -228,9 +336,7 @@ def install(node, accounts=None):
 
     for kind in REPLY_KINDS:
         node.register(kind, reply)
-    if accounts is not None:
-        return Authority(node, accounts)
-    return None
+    return Authority(node, accounts, replica_path)
 
 
 def verify_remote(node, token, callback):

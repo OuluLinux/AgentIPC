@@ -15,9 +15,13 @@ from agentipc.routing import Pings, SeenCache, Topology
 
 
 class Node(object):
-    def __init__(self, node_id, authority=None):
+    def __init__(self, node_id, authority=None, standby=None):
         self.id = node_id
         self.authority = authority
+        self.epoch = 0            # authority epoch: the highest one seen wins (see auth.py)
+        self.standby = standby    # node that receives the accounts replica
+        self.on_claim = None      # fn(name, epoch) called when a higher claim is adopted
+        self.link_handlers = {}   # packet kind -> fn(pkt, link), for kinds that need the arriving link
         self.lock = threading.RLock()
         self.links = []           # established links (hello done)
         self.attached = []        # every open link
@@ -47,6 +51,14 @@ class Node(object):
 
     def register(self, kind, fn):
         self.handlers[kind] = fn
+
+    def register_link(self, kind, fn):
+        """Like register, but fn also gets the link the packet arrived on."""
+        self.link_handlers[kind] = fn
+
+    def set_claim(self, name, epoch):
+        self.authority = name
+        self.epoch = epoch
 
     def add_service(self, service):
         self.services.append(service)
@@ -186,16 +198,17 @@ class Node(object):
             return
         if pkt["ttl"] <= 1:
             if self.id in targets:
-                self._dispatch(pkt)
+                self._dispatch(pkt, link)
             return
         self._forward(dict(pkt, ttl=pkt["ttl"] - 1), targets, link)
 
-    def _dispatch(self, pkt):
-        handler = self.handlers.get(pkt["kind"])
-        if handler is None:
-            return
+    def _dispatch(self, pkt, link=None):
+        kind = pkt["kind"]
         try:
-            handler(pkt)
+            if link is not None and kind in self.link_handlers:
+                self.link_handlers[kind](pkt, link)
+            elif kind in self.handlers:
+                self.handlers[kind](pkt)
         except Exception:
             traceback.print_exc()
 
@@ -208,7 +221,7 @@ class Node(object):
         link shared by several destinations carries the packet once.
         Returns False if no remote target could be routed and none is local."""
         if self.id in targets:
-            self._dispatch(pkt)
+            self._dispatch(pkt, arrived_from)
         groups = {}
         for name in targets:
             if name == self.id:
@@ -234,6 +247,17 @@ class Node(object):
                 return link
         return None
 
+    def ssh_link_to(self, peer):
+        """A live ssh link directly to peer, or None. Secrets travel only on these."""
+        for link in self.links:
+            if link.peer == peer and link.kind == "ssh" and not link.closed:
+                return link
+        return None
+
+    def send_on(self, link, dst, kind, payload):
+        """Send one packet over one link to the node on its other end. Not relayed (ttl 1)."""
+        link.send(proto.packet(self.id, dst, kind, payload, ttl=1))
+
     # ----- routing and ping --------------------------------------------
 
     def _neighbours(self):
@@ -247,7 +271,8 @@ class Node(object):
     def _announce_now(self):
         neighbours = self._neighbours()
         seq = self.topology.set_own(neighbours)
-        self.send(proto.FLOOD, "announce", {"seq": seq, "links": neighbours, "features": list(proto.FEATURES)})
+        self.send(proto.FLOOD, "announce", {"seq": seq, "links": neighbours, "features": list(proto.FEATURES),
+                                            "claim": {"node": self.authority, "epoch": self.epoch}})
 
     def _h_announce(self, pkt):
         payload = pkt["payload"]
@@ -262,6 +287,22 @@ class Node(object):
             features = payload.get("features")
             if isinstance(features, list) and all(isinstance(f, str) for f in features):
                 self.features[pkt["src"]] = features
+            self._take_claim(payload.get("claim"))
+
+    def _take_claim(self, claim):
+        """Follow the authority claim with the highest epoch. A higher one replaces ours."""
+        if not isinstance(claim, dict):
+            return
+        name, epoch = claim.get("node"), claim.get("epoch")
+        if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch <= self.epoch:
+            return
+        try:
+            proto.check_node(name)
+        except proto.ProtoError:
+            return
+        self.set_claim(name, epoch)
+        if self.on_claim is not None:
+            self.on_claim(name, epoch)
 
     def _h_ping(self, pkt):
         self.send(pkt["src"], "pong", {"t": pkt["payload"].get("t")})

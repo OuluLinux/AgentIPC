@@ -213,12 +213,33 @@ def cmd_bridge(args, ctx):
     sock.close()
 
 
-def _accounts(ctx):
-    return auth.Accounts(os.path.join(ctx.home, "accounts.json"))
+def _accounts(ctx, write=False):
+    """The accounts on this node. Writes are refused unless this node is the authority."""
+    path = os.path.join(ctx.home, "accounts.json")
+    me = node_id(ctx.cfg)
+    if not os.path.exists(path):
+        if write and ctx.cfg.get("authority") != me:
+            raise StoreError("this node is not the authority (%s)" % ctx.cfg.get("authority"))
+        accounts = auth.Accounts(path)
+        accounts.data["authority"] = me
+        return accounts
+    accounts = auth.Accounts(path)
+    owner = accounts.data.get("authority") or me
+    if write and owner != me:
+        raise StoreError("this node is not the authority; the authority is %s" % owner)
+    return accounts
 
 
 def cmd_account(args, ctx):
-    accounts = _accounts(ctx)
+    if args.action == "promote":
+        try:
+            epoch = auth.promote(os.path.join(ctx.home, auth.REPLICA_FILE),
+                                 os.path.join(ctx.home, "accounts.json"), node_id(ctx.cfg))
+        except ValueError as exc:
+            raise StoreError(str(exc))
+        print("promoted to authority, epoch %d; restart this node to take the role" % epoch)
+        return
+    accounts = _accounts(ctx, write=args.action in ("add", "remove"))
     if args.action == "add":
         if not args.user:
             raise StoreError("usage: agentipc account add USER")
@@ -248,7 +269,7 @@ def cmd_account(args, ctx):
 
 
 def cmd_server(args, ctx):
-    accounts = _accounts(ctx)
+    accounts = _accounts(ctx, write=args.action == "create")
     if args.action == "create":
         if not args.name:
             raise StoreError("usage: agentipc server create NAME [--encrypted]")
@@ -446,7 +467,7 @@ def build_parser():
     sp.set_defaults(func=cmd_bridge)
 
     sp = sub.add_parser("account", help="manage accounts on the authority node")
-    sp.add_argument("action", choices=["add", "remove", "list"])
+    sp.add_argument("action", choices=["add", "remove", "list", "promote"])
     sp.add_argument("user", nargs="?")
     sp.add_argument("--password-env", help="read the password from this environment variable")
     sp.set_defaults(func=cmd_account)

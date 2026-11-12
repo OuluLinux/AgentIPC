@@ -446,9 +446,9 @@ class Instances(unittest.TestCase):
         for name in cls.homes:
             os.makedirs(cls.homes[name])
         with open(os.path.join(cls.homes["one"], "config.json"), "w") as fh:
-            json.dump({"authority": "one", "allow": ["127.0.0.1"]}, fh)
+            json.dump({"node": "one", "authority": "one", "allow": ["127.0.0.1"]}, fh)
         with open(os.path.join(cls.homes["two"], "config.json"), "w") as fh:
-            json.dump({"authority": "one", "allow": ["127.0.0.1"],
+            json.dump({"node": "two", "authority": "one", "allow": ["127.0.0.1"],
                        "peers": [{"kind": "direct", "host": "127.0.0.1", "port": cls.ports["one-listen"]}]}, fh)
         cls.cli("--home", cls.homes["one"], "account", "add", "user", "--password-env", "PW")
         cls.cli("--home", cls.homes["one"], "server", "create", "plain")
@@ -493,3 +493,107 @@ class Instances(unittest.TestCase):
         self.assertIn("posted", self.vs_direct(self.ports["one-listen"], "say", "general", "hello two"))
         self.assertTrue(wait_for_text(lambda: self.vs_direct(self.ports["two-listen"], "read", "general"),
                                       "hello two", timeout=20))
+
+
+class Failover(unittest.TestCase):
+    """Authority failover over ssh links: the accounts reach the standby, the standby is
+    promoted by hand, logins go through it, and the old authority steps down when it returns."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.homes = os.path.join(self.tmp, "homes")
+        self.bin = os.path.join(self.tmp, "bin")
+        os.makedirs(self.homes)
+        os.makedirs(self.bin)
+        with open(os.path.join(self.bin, "ssh"), "w") as fh:
+            fh.write(FAKE_SSH)
+        os.chmod(os.path.join(self.bin, "ssh"), 0o755)
+        self.env = dict(os.environ)
+        self.env["PATH"] = self.bin + os.pathsep + os.environ["PATH"]
+        self.env["FAKE_SSH_HOMES"] = self.homes
+        self.env["PW"] = "alice-pw"
+        self.ports = {"AUTH": free_port(), "SB": free_port()}
+        self.write_config("AUTH", {"authority": "AUTH", "standby": "SB",
+                                   "peers": [{"kind": "ssh", "target": "SB@localhost"}]})
+        self.write_config("SB", {"authority": "AUTH", "standby": "AUTH",
+                                 "peers": [{"kind": "ssh", "target": "AUTH@localhost"}]})
+        accounts = auth.Accounts(os.path.join(self.homes, "AUTH", "accounts.json"))
+        accounts.add_user("alice", "alice-pw")
+        accounts.add_server("plain", encrypted=False)
+        self.procs = {}
+        for name in ("AUTH", "SB"):
+            self.start(name)
+        self.settle()
+
+    def tearDown(self):
+        for proc in self.procs.values():
+            if proc.poll() is None:
+                proc.terminate()
+                proc.wait()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def write_config(self, name, extra):
+        home = os.path.join(self.homes, name)
+        os.makedirs(home)
+        cfg = {"node": name, "control_port": self.ports[name]}
+        cfg.update(extra)
+        with open(os.path.join(home, "config.json"), "w") as fh:
+            json.dump(cfg, fh)
+
+    def start(self, name):
+        env = dict(self.env, AGENTIPC_HOME=os.path.join(self.homes, name))
+        log = open(os.path.join(self.tmp, name + ".log"), "ab")
+        self.procs[name] = spawn([sys.executable, os.path.join(REPO, "bin", "agentipc"), "node", "run"],
+                                 env=env, stdout=log, stderr=log)
+        self.assertTrue(wait_port(self.ports[name]), name)
+
+    def settle(self):
+        time.sleep(1.5)  # ssh links and the first announces
+
+    def stop(self, name):
+        self.procs[name].terminate()
+        self.procs[name].wait()
+
+    def cli(self, home, *args, **kwargs):
+        env = dict(self.env, AGENTIPC_HOME=os.path.join(self.homes, home))
+        cmd = [sys.executable, os.path.join(REPO, "bin", "agentipc")] + list(args)
+        return subprocess.check_output(cmd, env=env, stderr=subprocess.STDOUT, **kwargs).decode("utf-8")
+
+    def vs(self, target, *args):
+        cmd = [sys.executable, os.path.join(REPO, "bin", "agentipc"), "vs", "--ssh", target + "@localhost",
+               "--user", "alice", "--server", "plain", "--password-env", "PW"] + list(args)
+        return subprocess.check_output(cmd, env=self.env, stderr=subprocess.STDOUT).decode("utf-8")
+
+    def wait_for(self, check, timeout=30):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if check():
+                return True
+            time.sleep(0.5)
+        return False
+
+    def test_the_standby_takes_over_and_the_old_authority_steps_down(self):
+        replica = os.path.join(self.homes, "SB", auth.REPLICA_FILE)
+        self.assertTrue(self.wait_for(lambda: os.path.exists(replica)), "replica never arrived")
+        self.vs("AUTH", "say", "general", "before failover")
+
+        self.stop("AUTH")
+        self.cli("SB", "account", "promote")
+        self.stop("SB")
+        self.start("SB")
+        self.settle()
+
+        self.vs("SB", "say", "general", "after failover")
+        self.assertIn("after failover", self.vs("SB", "read", "general"))
+        promoted = auth.Accounts(os.path.join(self.homes, "SB", "accounts.json")).data
+        self.assertEqual((promoted["authority"], promoted["epoch"]), ("SB", 1))
+
+        self.start("AUTH")
+        self.settle()
+        self.assertTrue(self.wait_for(lambda: auth.Accounts(
+            os.path.join(self.homes, "AUTH", "accounts.json")).data["authority"] == "SB"),
+            "old authority never stepped down")
+        with self.assertRaises(subprocess.CalledProcessError) as cm:
+            self.cli("AUTH", "account", "add", "bob", "--password-env", "PW")
+        self.assertIn("not the authority", cm.exception.output.decode("utf-8"))
+

@@ -6,11 +6,14 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import tempfile
 import time
+import types
 import unittest
 
-from agentipc import auth, crypto, files, proto
+from agentipc import auth, cli, crypto, files, proto
+from agentipc.node import Node
 from agentipc.routing import SeenCache, Topology
 from agentipc.vserver import RecordStore, valid_record
 
@@ -371,3 +374,123 @@ class RetentionTest(unittest.TestCase):
     def test_cutoff_format_matches_record_timestamps(self):
         from agentipc import vserver
         self.assertEqual(vserver.cutoff_for(1, 0), "1969-12-31T00:00:00Z")
+
+
+class FakeLink(object):
+    """Stands in for a link: records what is sent over it."""
+
+    def __init__(self, peer, kind="ssh"):
+        self.peer = peer
+        self.kind = kind
+        self.closed = False
+        self.sent = []
+
+    def send(self, pkt):
+        self.sent.append(pkt)
+
+
+class FailoverTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.accounts_path = os.path.join(self.dir, "accounts.json")
+        self.replica_path = os.path.join(self.dir, auth.REPLICA_FILE)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def replica_frame(self, src, rev, epoch=0, authority=None, data=None):
+        return {"src": src, "kind": "replica", "dst": "mg", "payload": {
+            "authority": authority or src, "epoch": epoch, "rev": rev,
+            "data": data or {"secret": "00", "users": {}, "servers": {}}}}
+
+    def test_a_higher_epoch_claim_replaces_ours_and_lower_or_equal_do_not(self):
+        node = Node("mg", authority="gen7")
+        seen = []
+        node.on_claim = lambda name, epoch: seen.append((name, epoch))
+        node._take_claim({"node": "mg", "epoch": 1})
+        self.assertEqual((node.authority, node.epoch), ("mg", 1))
+        node._take_claim({"node": "gen7", "epoch": 1})
+        node._take_claim({"node": "gen7", "epoch": 0})
+        self.assertEqual((node.authority, node.epoch), ("mg", 1))
+        self.assertEqual(seen, [("mg", 1)])
+
+    def test_bad_claims_are_ignored(self):
+        node = Node("mg", authority="gen7")
+        for claim in (None, "gen7", {"node": "bad name", "epoch": 5}, {"node": "x", "epoch": True},
+                      {"node": "x", "epoch": "2"}):
+            node._take_claim(claim)
+        self.assertEqual((node.authority, node.epoch), ("gen7", 0))
+
+    def test_the_accounts_go_only_over_ssh_and_only_when_they_change(self):
+        accounts = auth.Accounts(self.accounts_path)
+        accounts.add_user("alice", "pw")
+        node = Node("gen7", authority="gen7", standby="mg")
+        authority = auth.install(node, accounts, self.replica_path)
+        direct = FakeLink("mg", kind="direct")
+        node.links.append(direct)
+        authority.replicate_once()
+        self.assertEqual(direct.sent, [])
+        ssh = FakeLink("mg")
+        node.links.append(ssh)
+        authority.replicate_once()
+        self.assertEqual([p["kind"] for p in ssh.sent], ["replica"])
+        self.assertEqual(ssh.sent[0]["ttl"], 1)
+        self.assertEqual(ssh.sent[0]["dst"], "mg")
+        authority.replicate_once()
+        self.assertEqual(len(ssh.sent), 1)
+        accounts.add_user("bob", "pw2")
+        authority.replicate_once()
+        self.assertEqual(len(ssh.sent), 2)
+        self.assertIn("bob", ssh.sent[1]["payload"]["data"]["users"])
+
+    def test_a_standby_keeps_only_newer_replicas_from_its_ssh_link(self):
+        node = Node("mg", authority="gen7")
+        authority = auth.install(node, None, self.replica_path)
+        authority._h_replica(self.replica_frame("gen7", 3), FakeLink("gen7", kind="direct"))
+        self.assertIsNone(auth.read_replica(self.replica_path))
+        authority._h_replica(self.replica_frame("mg", 3), FakeLink("mg"))
+        self.assertIsNone(auth.read_replica(self.replica_path))
+        authority._h_replica(self.replica_frame("gen7", 3), FakeLink("gen7"))
+        self.assertEqual(auth.read_replica(self.replica_path)["rev"], 3)
+        self.assertEqual(stat.S_IMODE(os.stat(self.replica_path).st_mode), 0o600)
+        authority._h_replica(self.replica_frame("gen7", 2), FakeLink("gen7"))
+        self.assertEqual(auth.read_replica(self.replica_path)["rev"], 3)
+        authority._h_replica(self.replica_frame("gen7", 4, epoch=0), FakeLink("gen7"))
+        self.assertEqual(auth.read_replica(self.replica_path)["rev"], 4)
+
+    def test_promote_takes_the_replica_with_the_next_epoch(self):
+        accounts = auth.Accounts(self.accounts_path)
+        accounts.add_user("alice", "pw")
+        accounts.data["authority"] = "gen7"
+        accounts.save()
+        auth.write_private(self.replica_path, {"authority": "gen7", "epoch": 3, "rev": 9,
+                                               "data": dict(accounts.data, epoch=3)})
+        self.assertEqual(auth.promote(self.replica_path, self.accounts_path, "mg"), 4)
+        promoted = auth.Accounts(self.accounts_path).data
+        self.assertEqual((promoted["authority"], promoted["epoch"]), ("mg", 4))
+        self.assertIsNotNone(auth.Accounts(self.accounts_path).user("alice"))
+        with self.assertRaises(ValueError):
+            auth.promote(self.replica_path, self.accounts_path, "mg")
+
+    def test_promote_needs_a_replica(self):
+        with self.assertRaises(ValueError):
+            auth.promote(self.replica_path, self.accounts_path, "mg")
+
+    def test_a_node_without_accounts_refuses_login_and_verify(self):
+        node = Node("mg", authority="gen7")
+        authority = auth.install(node, None, self.replica_path)
+        sent = []
+        authority._reply = lambda dst, kind, req, body: sent.append((kind, dict(body, req=req)))
+        authority._h_verify({"src": "td", "payload": {"req": "r1", "token": "x"}})
+        authority._h_login_start({"src": "td", "payload": {"req": "r2", "user": "alice", "server": "plain"}})
+        self.assertEqual(sent, [("verify-result", {"ok": False, "req": "r1"}),
+                                ("login-result", {"ok": False, "reason": "not-authority", "req": "r2"})])
+
+    def test_account_writes_are_refused_when_another_node_is_the_authority(self):
+        accounts = auth.Accounts(self.accounts_path)
+        accounts.data["authority"] = "mg"
+        accounts.save()
+        ctx = types.SimpleNamespace(home=self.dir, cfg={"node": "gen7", "authority": "gen7"})
+        self.assertEqual(cli._accounts(ctx).data["authority"], "mg")
+        with self.assertRaises(cli.StoreError):
+            cli._accounts(ctx, write=True)

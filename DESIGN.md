@@ -273,6 +273,43 @@ any node that announced its features and lacks the one the kind needs
 (`proto.KIND_FEATURES`). A refused send reports `ERR no-route`. Nodes that
 announce no features are not refused.
 
+## Authority failover
+
+The authority holds `accounts.json`: the token-signing secret, each user's
+password-derived key, and each encrypted server's key. Without it, logins and
+token checks fail. Failover moves that role to a standby by hand.
+
+- **Config.** The authority sets `"standby": NAME`. The standby is a second node
+  that holds the same accounts. Each node that may take over sets `standby` to the
+  other, so the roles can swap back.
+- **Replication.** Every 5 s the authority checks whether its accounts changed
+  (`rev`, bumped on each save). If they did and the standby has a live ssh link,
+  it sends the whole file as a `replica` packet, one hop, not relayed. The standby
+  stores it as `accounts.replica.json`, mode 0600.
+- **Ssh only.** The accounts carry password-equivalent keys, so they never travel on
+  a direct link. The sender uses only an ssh link to the standby. The receiver
+  refuses a replica that arrives on any other kind of link, or that comes from
+  anyone but the authority it follows.
+- **Epoch.** The accounts carry `epoch`. Every announce carries the sender's claim
+  `{node, epoch}`. A node follows a claim only if its epoch is higher than its own.
+  Following a higher claim makes that node no longer the authority, and it records
+  the new claim in its own accounts file. Its CLI then refuses account and server
+  writes, and its login and verify handlers answer `not-authority`.
+- **Promotion.** `agentipc account promote` on the standby turns the replica into
+  the accounts with `authority` set to this node and `epoch` = the replica's epoch
+  + 1 (or the local epoch + 1 if higher). Restart the node to take the role. The
+  node announces its new claim, and the others follow it.
+- **Lost writes.** Changes made on the old authority after its last replica send
+  are lost on failover. The old authority does not merge them when it steps down.
+  Replicas are sent every 5 s when the standby is connected, so the window is short
+  but not zero. Waiting for the standby to confirm each change was considered and
+  not done: account changes would fail whenever the standby is down.
+- **Tokens and encrypted servers** keep working after failover. The standby has the
+  same signing secret and server keys.
+- **Not automatic.** Two nodes cannot tell "dead" from "cut off", so an automatic
+  takeover could make two authorities at once. Promotion is a manual step. Automatic
+  failover needs a third node to vote, and is not done.
+
 ## Decisions taken during implementation
 
 - **Link crypto:** allowed. The earlier "no custom crypto" rule is withdrawn.
