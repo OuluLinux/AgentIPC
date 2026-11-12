@@ -2,7 +2,6 @@
 """Routing state: link-state topology, next hops, ping results, dedupe cache."""
 
 import time
-from collections import OrderedDict
 from collections import deque
 
 
@@ -98,13 +97,15 @@ class SeenCache(object):
 
     def __init__(self, size=10000):
         self.size = size
-        self._items = OrderedDict()
+        self._items = set()
+        self._order = deque()
 
     def add(self, key):
         """Returns True if the key was new."""
         if key in self._items:
             return False
-        self._items[key] = True
-        if len(self._items) > self.size:
-            self._items.popitem(last=False)
+        self._items.add(key)
+        self._order.append(key)
+        if len(self._order) > self.size:
+            self._items.discard(self._order.popleft())
         return True

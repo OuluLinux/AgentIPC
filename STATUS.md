@@ -7,10 +7,9 @@ done, and known gaps. [DESIGN.md](DESIGN.md) describes the design.
 
 ## Priorities
 
-1. Small C node (phase 11). Leaf node done in `cnode/` (see `cnode/README.md`): versioned handshake, stays open, announces, answers pings; a live Python node sees it alive over a fake-ssh link. Also listens on 127.0.0.1 for direct links (`--listen PORT`). Still to do: forwarding and routing, feature checks in Python, virtual server, shell, file transfer. Plain links, remote shell, file transfer. Must speak the versioned protocol (DESIGN.md, "Versioning").
+1. Small C node (phase 11). Router in `cnode/` (see `cnode/README.md`): versioned handshake, routing, forwarding, duplicate suppression, pings, direct listener. Running on gen7. Still to do: virtual server, shell, file transfer.
 2. Android app (phase 06). Sketch only; needs C-node-level work to be useful on the same mesh.
-3. Python 2.7 verification. **Postponed** until a Python 2.7 system is available (Gentoo py2.7 setup is hard).
-4. Link encryption (phase 10), then obfuscated HTTP/HTTPS (note only).
+3. Link encryption (phase 10), then obfuscated HTTP/HTTPS (note only).
 
 ## Implemented and tested
 
@@ -50,7 +49,7 @@ three-hop chain, direct triangle, node loss and recovery, shell on all nodes.
 
 - Small C node (phase 11). Not started.
 - Android app (phase 06). Kotlin sketch committed (`android/`), not compiled or run: no Android SDK on the development machine, and its java install is broken. Dependency versions are unchecked.
-- Python 2.7 verification (phase 01 task 06 and the mesh code). Postponed. The code avoids Python 3-only syntax, but nothing has run on 2.7.
+- Python 2.6 and 2.7 verification: see "Python versions" in DESIGN.md. 2.7 passes the full suite. 2.6 runs the nodes and the CLI, and passes the end-to-end suite with the tests driven by 2.7; its own unit tests cannot run (no `unittest discover`).
 - Link encryption for direct links (phase 10). Allowed by the design (PyNaCl), not built.
 - Obfuscated HTTP/HTTPS transport. Note only.
 - Encrypted file transfer.
@@ -67,10 +66,10 @@ three-hop chain, direct triangle, node loss and recovery, shell on all nodes.
 - **Shell access is broad.** Any user on a node's `shell.users` list runs arbitrary commands as that node's user. Keep lists short.
 - **Plain servers expose messages to relays.** Message bodies on a plain server are readable by every node that carries them.
 - **Membership is not pruned.** Channel records can be pruned with `retention_days`; membership is current state and is kept.
-- **Python 2.7 untested.** See above.
 
 ## Test environment notes
 
 - Development: Gentoo, Python 3.13 with a venv that has PyNaCl 1.6.2.
+- Python 2 checks: iMac (macOS 10.11, Python 2.6.9 and 2.7.10, no Python 3, no PyNaCl). Its clone is at `~/OuluLinux/AgentIPC` and is synced from the development machine.
 - Live machines: Gentoo and Linux x86_64, Python 3.14. One machine runs two instances.
 - The authority's firewall allows the direct port only from the two LAN peers.

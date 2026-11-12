@@ -22,6 +22,7 @@ import hashlib
 import hmac
 import json
 import os
+import struct
 import time
 
 from agentipc import crypto, proto
@@ -35,8 +36,33 @@ TOKEN_TTL = 3600
 REPLY_KINDS = ("login-challenge", "login-result", "verify-result")
 
 
+def native(text):
+    """A native str. JSON gives unicode on Python 2, and hmac.compare_digest refuses
+    to compare str with unicode, so values from the wire are converted first."""
+    if isinstance(text, str):
+        return text
+    return text.encode("ascii")
+
+
+def same(expected, given):
+    """Constant-time equality for strings from the wire. Anything that cannot be
+    compared (non-ASCII, wrong type) is not the same."""
+    try:
+        expected, given = native(expected), native(given)
+        if hasattr(hmac, "compare_digest"):
+            return hmac.compare_digest(expected, given)
+    except (UnicodeError, TypeError):
+        return False
+    if len(expected) != len(given):
+        return False
+    diff = 0
+    for x, y in zip(bytearray(expected), bytearray(given)):
+        diff |= x ^ y
+    return diff == 0
+
+
 def hexlify(data):
-    return binascii.hexlify(data).decode("ascii")
+    return str(binascii.hexlify(data).decode("ascii"))
 
 
 def unhexlify(text):
@@ -46,7 +72,23 @@ def unhexlify(text):
 def derive_key(password, salt, iterations):
     if not isinstance(password, bytes):
         password = password.encode("utf-8")
-    return hashlib.pbkdf2_hmac("sha256", password, salt, iterations, 32)
+    if hasattr(hashlib, "pbkdf2_hmac"):
+        return hashlib.pbkdf2_hmac("sha256", password, salt, iterations, 32)
+    return pbkdf2_sha256(password, salt, iterations)
+
+
+def pbkdf2_sha256(password, salt, iterations):
+    """PBKDF2-HMAC-SHA256 for one 32-byte block, in plain Python.
+
+    Used where hashlib.pbkdf2_hmac is missing (Python before 2.7.8). Gives the same
+    key as hashlib, so accounts made on either are compatible."""
+    u = hmac.new(password, salt + struct.pack(">I", 1), hashlib.sha256).digest()
+    out = bytearray(bytearray(u))
+    for _ in range(iterations - 1):
+        u = hmac.new(password, u, hashlib.sha256).digest()
+        for i, byte in enumerate(bytearray(u)):
+            out[i] ^= byte
+    return bytes(out)
 
 
 def proof_for(key, nonce):
@@ -168,7 +210,7 @@ def parse_token(accounts, token, now=None):
         body, mac = token.split(".")
         payload = unhexlify(body)
         expected = hmac.new(accounts.secret(), payload, hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(expected, mac):
+        if not same(expected, mac):
             return None
         user, server, expires = payload.decode("utf-8").split("|")
         expires = int(expires)
@@ -250,7 +292,7 @@ class Authority(object):
         record = self.accounts.user(challenge["user"])
         key = unhexlify(record["key"]) if record else None
         if key is None or not isinstance(proof, proto.string_types) or \
-                not hmac.compare_digest(proof_for(key, challenge["nonce"]), proof):
+                not same(proof_for(key, challenge["nonce"]), proof):
             self._reply(pkt["src"], "login-result", req, {"ok": False, "reason": "bad-login"})
             return
         server = self.accounts.server(challenge["server"])

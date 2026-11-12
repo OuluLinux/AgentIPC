@@ -17,7 +17,8 @@ See [DESIGN.md](DESIGN.md) for the protocol and decisions, and [STATUS.md](STATU
 
 ## Requirements
 
-- Python 2.7 or 3, stdlib only for the core.
+- Python 2.6, 2.7 or 3, stdlib only for the core. On 2.6 the CLI uses a vendored
+  copy of argparse (`agentipc/_argparse.py`, Python Software Foundation License).
 - `ssh` on the machine that dials out.
 - Optional: PyNaCl (`pip install pynacl`) for encrypted virtual servers.
   PyNaCl 1.4.0 is the last release that supports Python 2.7.
@@ -77,6 +78,13 @@ python3 -m unittest discover -s tests       # core and end-to-end
 
 The end-to-end tests start real node processes. ssh is replaced by a fake
 script on PATH, which runs the remote command locally.
+
+Python 2.7 runs the same suite. Python 2.6 has no `unittest discover`, so there
+the nodes and the CLI are run by 2.6 while the tests run under 2.7:
+
+```sh
+AGENTIPC_PYTHON=python2.6 python2.7 -m unittest discover -s tests -p test_e2e.py
+```
 
 ## Privacy
 

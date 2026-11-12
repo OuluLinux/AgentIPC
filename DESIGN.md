@@ -273,6 +273,30 @@ any node that announced its features and lacks the one the kind needs
 (`proto.KIND_FEATURES`). A refused send reports `ERR no-route`. Nodes that
 announce no features are not refused.
 
+## Python versions
+
+Supported: Python 2.6, 2.7 and 3. Checked on an iMac with Python 2.6.9 and 2.7.10:
+
+- 2.7: the full suite passes (141 tests, 2 skipped without PyNaCl).
+- 2.6: the nodes and the CLI run, and two nodes exchange logins and messages. The
+  end-to-end suite passes with its nodes and CLI on 2.6 (`AGENTIPC_PYTHON`, see the
+  README). The unit tests need `unittest discover` and assert helpers that 2.6 lacks.
+
+What differs from Python 3, and how it is handled:
+
+- **argparse:** missing on 2.6. The CLI falls back to `agentipc/_argparse.py`, a copy
+  of argparse 1.1 from Python 2.7 with one change (OrderedDict falls back to dict).
+- **PBKDF2:** `hashlib.pbkdf2_hmac` is missing before 2.7.8. `auth.pbkdf2_sha256`
+  is used then, and gives the same key (tested against hashlib).
+- **Constant-time compare:** `hmac.compare_digest` is missing before 2.7.7. `auth.same`
+  falls back to a plain loop. JSON gives `unicode` on Python 2, so wire strings are
+  converted before comparing, and the comparison refuses mixed or non-ASCII input.
+- **OrderedDict:** not used. `SeenCache` keeps a set and a deque.
+- **Event.wait():** returns None before 2.7, so waits check `is_set()` afterwards.
+- **Link close:** a closing link waits up to 2 s for queued frames to be written, so
+  a refusal's `bye` reaches the peer. Before this, the socket could be shut first and
+  the `bye` was lost on slower interpreters.
+
 ## Authority failover
 
 The authority holds `accounts.json`: the token-signing secret, each user's
@@ -337,8 +361,7 @@ token checks fail. Failover moves that role to a standby by hand.
 
 ## Open points
 
-- Python 2.7 is not verified: no interpreter was available. Code avoids
-  Python 3-only syntax, but it needs a real run.
+- Python 2.6 and 2.7: see "Python versions" below.
 - Android app: specified (phase 06) but not built. There is no Android SDK on
   the development machine.
 - Encrypted file transfer.

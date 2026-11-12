@@ -2,9 +2,24 @@
 """Helpers for in-process mesh tests: nodes joined by socketpair links."""
 
 import socket
+import threading
 import time
 
 from agentipc.node import Node
+
+
+def communicate(proc, timeout, data=None):
+    """proc.communicate with a timeout. Python 2 has no timeout argument, so wait in a thread."""
+    result = {}
+    worker = threading.Thread(target=lambda: result.update(out=proc.communicate(data)))
+    worker.daemon = True
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        proc.kill()
+        worker.join()
+        raise AssertionError("process did not finish within %s seconds" % timeout)
+    return result["out"]
 
 
 def connect(a, b, kind="local"):

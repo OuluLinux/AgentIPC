@@ -13,9 +13,20 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO))
 
 from agentipc import proto  # noqa: E402
+from mesh_util import communicate  # noqa: E402
 
 CNODE_DIR = os.path.join(REPO, "cnode")
+AGENT_PYTHON = os.environ.get("AGENTIPC_PYTHON", sys.executable)
 BINARY = os.path.join(CNODE_DIR, "cnode")
+
+
+def _which(name):
+    """shutil.which, for Python 2.7 too."""
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        path = os.path.join(directory, name)
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return None
 
 
 def free_port():
@@ -31,7 +42,7 @@ def run_cnode(lines, node="cnode-1", extra=()):
     data = "".join(lines).encode("ascii")
     p = subprocess.Popen([BINARY, "--stdio", "--node", node] + list(extra), stdin=subprocess.PIPE,
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    out, err = p.communicate(data, timeout=10)
+    out, err = communicate(p, 10, data)
     frames = [json.loads(line) for line in out.decode("ascii").splitlines() if line]
     return p.returncode, frames, err.decode("ascii")
 
@@ -50,7 +61,7 @@ def frame(**changes):
     return json.dumps(f) + "\n"
 
 
-@unittest.skipUnless(shutil.which("make") and (shutil.which("cc") or shutil.which("gcc")),
+@unittest.skipUnless(_which("make") and (_which("cc") or _which("gcc")),
                      "needs make and a C compiler")
 class HandshakeTest(unittest.TestCase):
 
@@ -123,7 +134,7 @@ class HandshakeTest(unittest.TestCase):
                 proto.decode(line.encode("ascii"))
 
 
-@unittest.skipUnless(shutil.which("make") and (shutil.which("cc") or shutil.which("gcc")),
+@unittest.skipUnless(_which("make") and (_which("cc") or _which("gcc")),
                      "needs make and a C compiler")
 class LeafTest(unittest.TestCase):
     """After the handshake the node stays open: it announces and answers pings."""
@@ -209,7 +220,7 @@ class LeafTest(unittest.TestCase):
         self.assertEqual(code, 0)
 
 
-@unittest.skipUnless(shutil.which("make") and (shutil.which("cc") or shutil.which("gcc")),
+@unittest.skipUnless(_which("make") and (_which("cc") or _which("gcc")),
                      "needs make and a C compiler")
 class LiveTest(unittest.TestCase):
     """A real Python node links to the C node over an ssh-style link (a fake ssh runs
@@ -237,7 +248,7 @@ class LiveTest(unittest.TestCase):
                              "command": "%s --stdio --node cn1" % BINARY}]}
         with open(os.path.join(cls.home, "config.json"), "w") as fh:
             json.dump(config, fh)
-        cls.agentipc = [sys.executable, os.path.join(REPO, "bin", "agentipc"), "--home", cls.home]
+        cls.agentipc = [AGENT_PYTHON, os.path.join(REPO, "bin", "agentipc"), "--home", cls.home]
         cls.log = os.path.join(cls.tmp, "node.log")
         cls.node = subprocess.Popen(cls.agentipc + ["node", "run"], env=cls.env,
                                     stdout=open(cls.log, "w"), stderr=subprocess.STDOUT)
@@ -249,8 +260,12 @@ class LiveTest(unittest.TestCase):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def nodes(self):
-        out = subprocess.check_output(self.agentipc + ["bridge", "client"], env=self.env,
-                                      input=b"NODES\n", timeout=20).decode("utf-8")
+        proc = subprocess.Popen(self.agentipc + ["bridge", "client"], env=self.env,
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        out, _ = communicate(proc, 20, b"NODES\n")
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(proc.returncode, "bridge client")
+        out = out.decode("utf-8")
         return [json.loads(line[5:]) for line in out.splitlines() if line.startswith("NODE ")]
 
     def test_python_node_sees_the_c_node_alive(self):
@@ -259,7 +274,7 @@ class LiveTest(unittest.TestCase):
         while time.time() < deadline:
             try:
                 rows = self.nodes()
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            except (subprocess.CalledProcessError, AssertionError):
                 rows = []
             if any(r["node"] == "cn1" and r["alive"] for r in rows):
                 break
@@ -270,7 +285,7 @@ class LiveTest(unittest.TestCase):
                         "cn1 not alive; node rows: %r\nnode log:\n%s" % (rows, log))
 
 
-@unittest.skipUnless(shutil.which("make") and (shutil.which("cc") or shutil.which("gcc")),
+@unittest.skipUnless(_which("make") and (_which("cc") or _which("gcc")),
                      "needs make and a C compiler")
 class ListenTest(unittest.TestCase):
     """Loopback direct links: the node listens, a Python dialer connects with MODE link."""
@@ -363,7 +378,7 @@ def announce(src, links, seq, pid=None):
     return pkt(src, "*", "announce", {"seq": seq, "links": links, "features": ["core"]}, pid=pid)
 
 
-@unittest.skipUnless(shutil.which("make") and (shutil.which("cc") or shutil.which("gcc")),
+@unittest.skipUnless(_which("make") and (_which("cc") or _which("gcc")),
                      "needs make and a C compiler")
 class RouterTest(unittest.TestCase):
     """The C node as a router: several direct links, forwarding, replies and dedupe.

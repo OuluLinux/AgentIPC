@@ -204,18 +204,21 @@ class VersionNegotiationTest(unittest.TestCase):
         self.wfile.flush()
 
     def replies(self, wait=1.0):
+        """Every frame the node sends within wait seconds. Reads raw bytes: Python 2's
+        buffered file objects can lose the last line when a read times out."""
         import json
+        import socket
         self.other.settimeout(wait)
-        lines = []
+        data = b""
         try:
             while True:
-                line = self.rfile.readline()
-                if not line:
+                chunk = self.other.recv(4096)
+                if not chunk:
                     break
-                lines.append(json.loads(line.decode("ascii")))
-        except Exception:
+                data += chunk
+        except socket.timeout:
             pass
-        return lines
+        return [json.loads(line.decode("ascii")) for line in data.splitlines() if line]
 
     def hello(self, **fields):
         frame = {"type": "hello", "node": "PEER", "version": 2, "min_version": 2, "link": "direct",

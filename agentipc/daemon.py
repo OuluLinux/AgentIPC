@@ -115,7 +115,7 @@ class Daemon(object):
                 log("ignoring peer with unknown kind %r" % peer.get("kind"))
 
     def _prune_loop(self):
-        while not self._stopping.wait(PRUNE_INTERVAL):
+        while not _wait(self._stopping, PRUNE_INTERVAL):
             removed = self.vs.prune()
             if removed:
                 log("retention dropped %d records" % removed)
@@ -198,7 +198,7 @@ class Daemon(object):
             _shutdown(conn)
 
     def _replica_loop(self):
-        while not self._stopping.wait(auth.REPLICA_INTERVAL):
+        while not _wait(self._stopping, auth.REPLICA_INTERVAL):
             self.authority.replicate_once()
 
     # ----- dialers -----------------------------------------------------
@@ -250,9 +250,15 @@ class Daemon(object):
                 link.closed_event.wait()
                 if time.time() - started > MAX_BACKOFF:
                     delay = 1.0
-            if self._stopping.wait(delay):
+            if _wait(self._stopping, delay):
                 break
             delay = min(delay * 2, MAX_BACKOFF)
+
+
+def _wait(event, seconds):
+    """Wait up to seconds; True if the event is set. Event.wait returns None before Python 2.7."""
+    event.wait(seconds)
+    return event.is_set()
 
 
 def _thread(target, *args):

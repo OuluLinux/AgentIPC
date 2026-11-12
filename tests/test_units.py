@@ -9,7 +9,6 @@ import shutil
 import stat
 import tempfile
 import time
-import types
 import unittest
 
 from agentipc import auth, cli, crypto, files, proto
@@ -130,6 +129,18 @@ class AuthTest(unittest.TestCase):
         body, mac = token.split(".")
         self.assertIsNone(auth.parse_token(self.accounts, body + "." + ("0" * len(mac))))
         self.assertIsNone(auth.parse_token(self.accounts, "zz.zz"))
+
+    def test_pbkdf2_fallback_gives_the_same_key_as_hashlib(self):
+        if not hasattr(hashlib, "pbkdf2_hmac"):
+            self.skipTest("hashlib.pbkdf2_hmac needs Python 2.7.8 or later")
+        expected = hashlib.pbkdf2_hmac("sha256", b"pw", b"salt-salt-salt-x", 50, 32)
+        self.assertEqual(auth.pbkdf2_sha256(b"pw", b"salt-salt-salt-x", 50), expected)
+
+    def test_same_compares_wire_strings_and_refuses_mixed_or_non_ascii(self):
+        self.assertTrue(auth.same("abc", u"abc"))
+        self.assertFalse(auth.same("abc", "abd"))
+        self.assertFalse(auth.same("abc", "abcd"))
+        self.assertFalse(auth.same("abc", u"ab\xe9"))
 
     def test_expired_token_is_refused(self):
         token = auth.make_token(self.accounts, "alice", "plain", int(time.time()) - 1)
@@ -376,6 +387,14 @@ class RetentionTest(unittest.TestCase):
         self.assertEqual(vserver.cutoff_for(1, 0), "1969-12-31T00:00:00Z")
 
 
+class FakeCtx(object):
+    """The CLI's context: a home directory and the config."""
+
+    def __init__(self, home, cfg):
+        self.home = home
+        self.cfg = cfg
+
+
 class FakeLink(object):
     """Stands in for a link: records what is sent over it."""
 
@@ -490,7 +509,7 @@ class FailoverTest(unittest.TestCase):
         accounts = auth.Accounts(self.accounts_path)
         accounts.data["authority"] = "mg"
         accounts.save()
-        ctx = types.SimpleNamespace(home=self.dir, cfg={"node": "gen7", "authority": "gen7"})
+        ctx = FakeCtx(home=self.dir, cfg={"node": "gen7", "authority": "gen7"})
         self.assertEqual(cli._accounts(ctx).data["authority"], "mg")
         with self.assertRaises(cli.StoreError):
             cli._accounts(ctx, write=True)

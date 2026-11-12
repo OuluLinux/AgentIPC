@@ -3,7 +3,10 @@
 
 from __future__ import print_function
 
-import argparse
+try:
+    import argparse
+except ImportError:  # Python 2.6 has no argparse; use the vendored copy
+    from agentipc import _argparse as argparse
 import getpass
 import json
 import os

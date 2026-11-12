@@ -9,6 +9,11 @@
 
 #include "net.h"
 
+/* Strict C89 with _POSIX_C_SOURCE hides this on some systems (macOS). It is always 127.0.0.1. */
+#ifndef INADDR_LOOPBACK
+#define INADDR_LOOPBACK 0x7f000001UL
+#endif
+
 int cn_listen_loopback(int port)
 {
     int fd, on = 1;

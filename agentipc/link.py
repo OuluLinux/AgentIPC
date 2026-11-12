@@ -16,6 +16,9 @@ except ImportError:  # Python 2
     import Queue as queue
 
 
+CLOSE_FLUSH_TIMEOUT = 2.0   # seconds a closing link waits for its queued frames to be written
+
+
 class Link(object):
     def __init__(self, rfile, wfile, kind, on_frame, on_close, closer=None):
         self.kind = kind          # "ssh", "direct" or "local"
@@ -37,6 +40,8 @@ class Link(object):
             thread = threading.Thread(target=target, name=name)
             thread.daemon = True
             thread.start()
+            if name == "link-write":
+                self._writer = thread
 
     def send(self, frame):
         if not self.closed:
@@ -50,6 +55,11 @@ class Link(object):
         if reason:
             self._out.put(proto.bye(reason))
         self._out.put(None)
+        # Let the queued frames (a refusal's bye, say) reach the peer before the
+        # socket is shut. Without this the bye is lost whenever the writer is slow.
+        writer = getattr(self, "_writer", None)
+        if writer is not None and writer is not threading.current_thread():
+            writer.join(CLOSE_FLUSH_TIMEOUT)
         try:
             self.on_close(self)
         finally:

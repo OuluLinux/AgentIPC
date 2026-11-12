@@ -18,9 +18,12 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+# Interpreter for the nodes and the CLI under test. AGENTIPC_PYTHON=python2.6 runs them on 2.6.
+AGENT_PYTHON = os.environ.get("AGENTIPC_PYTHON", sys.executable)
 sys.path.insert(0, REPO)
 
 from agentipc import auth  # noqa: E402
+from mesh_util import communicate  # noqa: E402
 
 # Node processes started by these tests. If a run is interrupted, the hook below
 # still kills whatever is left at exit, so no node outlives the test run.
@@ -88,7 +91,7 @@ class EndToEnd(unittest.TestCase):
             fh.write(FAKE_SSH)
         os.chmod(os.path.join(cls.bin, "ssh"), 0o755)
         with open(os.path.join(cls.bin, "agentipc"), "w") as fh:
-            fh.write('#!/bin/sh\nexec "%s" "%s/bin/agentipc" "$@"\n' % (sys.executable, REPO))
+            fh.write('#!/bin/sh\nexec "%s" "%s/bin/agentipc" "$@"\n' % (AGENT_PYTHON, REPO))
         os.chmod(os.path.join(cls.bin, "agentipc"), 0o755)
         cls.env = dict(os.environ)
         cls.env["PATH"] = cls.bin + os.pathsep + os.environ["PATH"]
@@ -125,7 +128,7 @@ class EndToEnd(unittest.TestCase):
     def start_node(cls, name):
         env = dict(cls.env, AGENTIPC_HOME=os.path.join(cls.homes, name))
         log = open(os.path.join(cls.tmp, name + ".log"), "ab")
-        return spawn([sys.executable, os.path.join(REPO, "bin", "agentipc"), "node", "run"],
+        return spawn([AGENT_PYTHON, os.path.join(REPO, "bin", "agentipc"), "node", "run"],
                                 env=env, stdout=log, stderr=log)
 
     @classmethod
@@ -137,7 +140,7 @@ class EndToEnd(unittest.TestCase):
 
     def vs(self, *args, **kwargs):
         env = dict(self.env, PW="alice-pw")
-        cmd = [sys.executable, os.path.join(REPO, "bin", "agentipc"), "vs"] + list(args)
+        cmd = [AGENT_PYTHON, os.path.join(REPO, "bin", "agentipc"), "vs"] + list(args)
         return subprocess.check_output(cmd, env=env, stderr=subprocess.STDOUT).decode("utf-8")
 
     def test_message_crosses_two_ssh_links(self):
@@ -155,21 +158,21 @@ class EndToEnd(unittest.TestCase):
 
     def test_wrong_password_exits_with_error(self):
         env = dict(self.env, PW="nope")
-        proc = subprocess.Popen([sys.executable, os.path.join(REPO, "bin", "agentipc"), "vs",
+        proc = subprocess.Popen([AGENT_PYTHON, os.path.join(REPO, "bin", "agentipc"), "vs",
                                  "--ssh", "A@localhost", "--user", "alice", "--server", "plain",
                                  "--password-env", "PW", "read", "general"],
                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        _, err = proc.communicate(timeout=20)
+        _, err = communicate(proc, 20)
         self.assertEqual(proc.returncode, 1)
         self.assertIn(b"bad-login", err)
 
     def exec_as(self, user, password, via, node, command):
         env = dict(self.env, PW=password)
-        cmd = [sys.executable, os.path.join(REPO, "bin", "agentipc"), "vs", "--ssh", via + "@localhost",
+        cmd = [AGENT_PYTHON, os.path.join(REPO, "bin", "agentipc"), "vs", "--ssh", via + "@localhost",
                "--user", user, "--server", "plain", "--password-env", "PW",
                "exec", node, "--timeout", "10", "--"] + command
         proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        out, err = proc.communicate(timeout=30)
+        out, err = communicate(proc, 30)
         return proc.returncode, out.decode("utf-8"), err.decode("utf-8")
 
     def test_exec_runs_where_shell_is_enabled(self):
@@ -248,7 +251,7 @@ class DirectLinks(unittest.TestCase):
     def start(cls, name):
         env = dict(cls.env, AGENTIPC_HOME=os.path.join(cls.homes, name))
         log = open(os.path.join(cls.tmp, name + ".log"), "ab")
-        return spawn([sys.executable, os.path.join(REPO, "bin", "agentipc"), "node", "run"],
+        return spawn([AGENT_PYTHON, os.path.join(REPO, "bin", "agentipc"), "node", "run"],
                                 env=env, stdout=log, stderr=log)
 
     @classmethod
@@ -261,7 +264,7 @@ class DirectLinks(unittest.TestCase):
 
     def direct_nodes(self, port):
         env = dict(self.env, PW="alice-pw")
-        cmd = [sys.executable, os.path.join(REPO, "bin", "agentipc"), "vs", "--direct",
+        cmd = [AGENT_PYTHON, os.path.join(REPO, "bin", "agentipc"), "vs", "--direct",
                "127.0.0.1:%d" % port, "--user", "alice", "--server", "plain",
                "--password-env", "PW", "nodes"]
         return subprocess.check_output(cmd, env=env, stderr=subprocess.STDOUT).decode("utf-8")
@@ -271,11 +274,11 @@ class DirectLinks(unittest.TestCase):
 
     def test_unlisted_address_is_refused(self):
         env = dict(self.env, PW="alice-pw")
-        proc = subprocess.Popen([sys.executable, os.path.join(REPO, "bin", "agentipc"), "vs", "--direct",
+        proc = subprocess.Popen([AGENT_PYTHON, os.path.join(REPO, "bin", "agentipc"), "vs", "--direct",
                                  "127.0.0.1:%d" % self.ports["G"], "--user", "alice", "--server", "plain",
                                  "--password-env", "PW", "nodes"],
                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        _, err = proc.communicate(timeout=20)
+        _, err = communicate(proc, 20)
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn(b"not-allowed", err)
 
@@ -313,7 +316,7 @@ class WatchAndRemote(unittest.TestCase):
         cls.port = free_port()
         with open(os.path.join(cls.home, "config.json"), "w") as fh:
             json.dump({"node": "solo", "authority": "solo", "allow": ["127.0.0.1"], "listen": cls.port}, fh)
-        cls.agentipc = [sys.executable, os.path.join(REPO, "bin", "agentipc")]
+        cls.agentipc = [AGENT_PYTHON, os.path.join(REPO, "bin", "agentipc")]
         subprocess.check_call(cls.agentipc + ["--home", cls.home, "account", "add", "user", "--password-env", "PW"],
                               env=cls.env)
         subprocess.check_call(cls.agentipc + ["--home", cls.home, "server", "create", "plain"], env=cls.env)
@@ -353,7 +356,7 @@ class WatchAndRemote(unittest.TestCase):
                        env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         time.sleep(2.0)
         self.vs("say", "general", "wait-test-message")
-        out, err = waiter.communicate(timeout=20)
+        out, err = communicate(waiter, 20)
         self.assertEqual(waiter.returncode, 0, err)
         self.assertIn(b"wait-test-message", out)
         self.assertNotIn(b"watch-test-message", out)
@@ -461,13 +464,13 @@ class Instances(unittest.TestCase):
 
     @classmethod
     def cli(cls, *args):
-        return subprocess.check_output([sys.executable, os.path.join(REPO, "bin", "agentipc")] + list(args),
+        return subprocess.check_output([AGENT_PYTHON, os.path.join(REPO, "bin", "agentipc")] + list(args),
                                        env=cls.env, stderr=subprocess.STDOUT).decode("utf-8")
 
     @classmethod
     def start(cls, home_name, node, control, listen):
         log = open(os.path.join(cls.tmp, home_name + ".log"), "ab")
-        return spawn([sys.executable, os.path.join(REPO, "bin", "agentipc"),
+        return spawn([AGENT_PYTHON, os.path.join(REPO, "bin", "agentipc"),
                                  "--home", cls.homes[home_name], "node", "run", "--node", node,
                                  "--control-port", str(control), "--listen", str(listen)],
                                 env=cls.env, stdout=log, stderr=log)
@@ -481,7 +484,7 @@ class Instances(unittest.TestCase):
 
     def vs_direct(self, port, *args):
         return subprocess.check_output(
-            [sys.executable, os.path.join(REPO, "bin", "agentipc"), "vs", "--direct", "127.0.0.1:%d" % port,
+            [AGENT_PYTHON, os.path.join(REPO, "bin", "agentipc"), "vs", "--direct", "127.0.0.1:%d" % port,
              "--user", "user", "--server", "plain", "--password-env", "PW"] + list(args),
             env=self.env, stderr=subprocess.STDOUT).decode("utf-8")
 
@@ -508,6 +511,10 @@ class Failover(unittest.TestCase):
         with open(os.path.join(self.bin, "ssh"), "w") as fh:
             fh.write(FAKE_SSH)
         os.chmod(os.path.join(self.bin, "ssh"), 0o755)
+        # The remote command runs "agentipc"; point it at this checkout, not an installed copy.
+        with open(os.path.join(self.bin, "agentipc"), "w") as fh:
+            fh.write('#!/bin/sh\nexec "%s" "%s/bin/agentipc" "$@"\n' % (AGENT_PYTHON, REPO))
+        os.chmod(os.path.join(self.bin, "agentipc"), 0o755)
         self.env = dict(os.environ)
         self.env["PATH"] = self.bin + os.pathsep + os.environ["PATH"]
         self.env["FAKE_SSH_HOMES"] = self.homes
@@ -543,7 +550,7 @@ class Failover(unittest.TestCase):
     def start(self, name):
         env = dict(self.env, AGENTIPC_HOME=os.path.join(self.homes, name))
         log = open(os.path.join(self.tmp, name + ".log"), "ab")
-        self.procs[name] = spawn([sys.executable, os.path.join(REPO, "bin", "agentipc"), "node", "run"],
+        self.procs[name] = spawn([AGENT_PYTHON, os.path.join(REPO, "bin", "agentipc"), "node", "run"],
                                  env=env, stdout=log, stderr=log)
         self.assertTrue(wait_port(self.ports[name]), name)
 
@@ -556,11 +563,11 @@ class Failover(unittest.TestCase):
 
     def cli(self, home, *args, **kwargs):
         env = dict(self.env, AGENTIPC_HOME=os.path.join(self.homes, home))
-        cmd = [sys.executable, os.path.join(REPO, "bin", "agentipc")] + list(args)
+        cmd = [AGENT_PYTHON, os.path.join(REPO, "bin", "agentipc")] + list(args)
         return subprocess.check_output(cmd, env=env, stderr=subprocess.STDOUT, **kwargs).decode("utf-8")
 
     def vs(self, target, *args):
-        cmd = [sys.executable, os.path.join(REPO, "bin", "agentipc"), "vs", "--ssh", target + "@localhost",
+        cmd = [AGENT_PYTHON, os.path.join(REPO, "bin", "agentipc"), "vs", "--ssh", target + "@localhost",
                "--user", "alice", "--server", "plain", "--password-env", "PW"] + list(args)
         return subprocess.check_output(cmd, env=self.env, stderr=subprocess.STDOUT).decode("utf-8")
 
