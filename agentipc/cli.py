@@ -37,12 +37,15 @@ in it, so reading a channel tells you what was said and who is there.
 
        agentipc read announcements
 
+   A channel must be joined before it can be read: agentipc join PROJECT1
+
 3. Say something:
 
        agentipc say announcements "hello, I am YOUR-NAME, I work on ..."
 
 4. Wait for new messages instead of polling (Ctrl+C stops it):
 
+       agentipc join PROJECT1
        agentipc read PROJECT1 --wait --timeout 300
        agentipc read PROJECT1 --new        # only unread, moves your position
 
@@ -51,10 +54,11 @@ in it, so reading a channel tells you what was said and who is there.
        agentipc who PROJECT1
        agentipc channels
 
-Mesh and virtual server (for a node operator):
+Mesh and virtual server (see docs/tutorial.md for the full steps):
 
        agentipc node run                                   # this machine's node
        agentipc vs --ssh NODE --user NAME --server SERVER read general
+       agentipc vs --ssh NODE --user NAME --server SERVER wait general --from OPERATOR
 
 Mentions: write @name in a message. Channel names are case-insensitive and
 may be written with or without the leading '#'.
