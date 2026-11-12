@@ -6,12 +6,14 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import stat
 import tempfile
+import threading
 import time
 import unittest
 
-from agentipc import auth, cli, crypto, files, proto
+from agentipc import auth, cli, crypto, files, linkcrypt, proto
 from agentipc.node import Node
 from agentipc.routing import SeenCache, Topology
 from agentipc.vserver import RecordStore, valid_record
@@ -513,3 +515,99 @@ class FailoverTest(unittest.TestCase):
         self.assertEqual(cli._accounts(ctx).data["authority"], "mg")
         with self.assertRaises(cli.StoreError):
             cli._accounts(ctx, write=True)
+
+
+class LinkCryptTest(unittest.TestCase):
+    """The encrypted direct-link handshake, over a socket pair with the same file wrappers as daemon."""
+
+    def setUp(self):
+        try:
+            self.dir = tempfile.mkdtemp()
+            self.alice = linkcrypt.identity(os.path.join(self.dir, "alice"))
+            self.bob = linkcrypt.identity(os.path.join(self.dir, "bob"))
+            self.mallory = linkcrypt.identity(os.path.join(self.dir, "mallory"))
+        except linkcrypt.LinkCryptoError:
+            self.skipTest("PyNaCl not installed")
+        self.alice_pub = linkcrypt.public_key_hex(self.alice)
+        self.bob_pub = linkcrypt.public_key_hex(self.bob)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def pair(self, dial_pubkey=None, trusted=None):
+        """Runs dial (as alice) against accept (as bob) and returns both results or errors."""
+        left, right = socket.socketpair()
+        lr, lw = left.makefile("rb"), left.makefile("wb")
+        rr, rw = right.makefile("rb"), right.makefile("wb")
+        out = {}
+
+        def responder():
+            try:
+                out["bob"] = linkcrypt.accept(rr, rw, "bob", self.bob,
+                                              trusted if trusted is not None else {"alice": self.alice_pub})
+            except Exception as exc:
+                out["bob"] = exc
+                right.shutdown(socket.SHUT_RDWR)
+
+        thread = threading.Thread(target=responder)
+        thread.start()
+        try:
+            out["alice"] = linkcrypt.dial(lr, lw, "alice", self.alice,
+                                          dial_pubkey if dial_pubkey is not None else self.bob_pub)
+        except Exception as exc:
+            out["alice"] = exc
+        thread.join(10)
+        for sock in (left, right):
+            sock.close()
+        return out
+
+    def test_handshake_and_sealed_lines(self):
+        out = self.pair()
+        self.assertNotIsInstance(out["alice"], Exception)
+        self.assertNotIsInstance(out["bob"], Exception)
+        alice_streams, name = out["alice"]
+        bob_streams, peer = out["bob"]
+        self.assertEqual(name, "bob")
+        self.assertEqual(peer, "alice")
+        alice_streams.write(b'{"type": "hello"}\n')
+        alice_streams.flush()
+        self.assertEqual(bob_streams.readline(proto.MAX_LINE + 1), b'{"type": "hello"}\n')
+
+    def test_wrong_peer_key_is_refused(self):
+        out = self.pair(dial_pubkey=linkcrypt.public_key_hex(self.mallory))
+        self.assertIsInstance(out["alice"], linkcrypt.LinkCryptoError)
+
+    def test_untrusted_dialer_is_refused(self):
+        out = self.pair(trusted={"carol": self.alice_pub})
+        self.assertIsInstance(out["bob"], linkcrypt.LinkCryptoError)
+
+    def test_tampered_and_plain_lines_do_not_open(self):
+        out = self.pair()
+        alice_streams, _ = out["alice"]
+        bob_streams, _ = out["bob"]
+        alice_streams.write(b"real\n")
+        alice_streams.flush()
+        line = bob_streams.rfile.readline(linkcrypt.SEALED_LIMIT)
+        sealed = json.loads(line.decode("ascii"))
+        flipped = base64.b64decode(sealed["enc"].encode("ascii"))
+        flipped = flipped[:-1] + bytes(bytearray([flipped[-1] ^ 1]))
+        bad = (json.dumps({"enc": base64.b64encode(flipped).decode("ascii")}) + "\n").encode("ascii")
+        for raw in (bad, b'{"type": "hello"}\n'):
+            left, right = socket.socketpair()
+            try:
+                left.sendall(raw)
+                left.shutdown(socket.SHUT_WR)
+                reader = linkcrypt.Sealed(right.makefile("rb"), right.makefile("wb"), bytes(bytearray(32)))
+                with self.assertRaises(linkcrypt.LinkCryptoError):
+                    reader.readline(proto.MAX_LINE + 1)
+            finally:
+                left.close()
+                right.close()
+
+    def test_identity_is_stable_and_private(self):
+        home = os.path.join(self.dir, "stable")
+        first = linkcrypt.identity(home)
+        again = linkcrypt.identity(home)
+        self.assertEqual(linkcrypt.public_key_hex(first), linkcrypt.public_key_hex(again))
+        mode = stat.S_IMODE(os.stat(os.path.join(home, linkcrypt.IDENTITY_FILE)).st_mode)
+        self.assertEqual(mode, 0o600)

@@ -153,7 +153,7 @@ configuration picks the ones it dials or accepts.
 |---|---|---|
 | ssh session | done | default for any machine with ssh |
 | direct plain TCP, allowlisted addresses | done | retro LAN machines, py2.7 |
-| direct TCP with PyNaCl link encryption | planned (phase 10) | LAN or WAN machines without ssh; py2.7 with PyNaCl |
+| direct TCP with PyNaCl link encryption | built (see "Link encryption") | LAN or WAN machines without ssh; py2.7 with PyNaCl |
 | obfuscated HTTP/HTTPS | note only | networks with tight policies, where only web traffic passes |
 
 Obfuscated HTTP/HTTPS would tunnel link frames inside ordinary-looking HTTP(S)
@@ -333,6 +333,57 @@ token checks fail. Failover moves that role to a standby by hand.
 - **Not automatic.** Two nodes cannot tell "dead" from "cut off", so an automatic
   takeover could make two authorities at once. Promotion is a manual step. Automatic
   failover needs a third node to vote, and is not done.
+
+## Link encryption
+
+Direct TCP links can be encrypted (`agentipc/linkcrypt.py`). ssh links need nothing
+here, since ssh encrypts them. The module is the only place that imports PyNaCl for
+links, so a node without PyNaCl still runs plain links.
+
+Keys and config:
+
+- Each node has an Ed25519 signing key in `identity.key` in its home (created on
+  first use, mode 0600). `agentipc node pubkey` prints the public half.
+- A dialer puts the listener's public key in the peer entry: `"pubkey": HEX`.
+- A listener with `"listen"` and `"allow"` lists the dialers it trusts in
+  `"trusted": {"NODE": HEX, ...}`. A dialer's node name must be a key there.
+- `"require_encryption": true` on a listener refuses plain direct links. On a
+  dialer, a peer with no `pubkey` is not dialed; the attempt is logged and retried
+  with backoff like any failed dial.
+
+Handshake (over the same TCP connection, after the usual `MODE` line):
+
+1. The dialer sends `MODE linkenc`. Then `{"type":"kx","node":N,"eph":E,"sig":S}`,
+   with `E` a fresh X25519 public key and `S` an Ed25519 signature over
+   `"agentipc-link-init|" + E`.
+2. The listener checks that N is in `trusted` and that S verifies under that key.
+   It replies with its own `kx` frame: a fresh ephemeral key `E'` and a signature
+   over `"agentipc-link-resp|" + E' + E`. This binds the reply to this exchange.
+3. The dialer verifies the reply against the `pubkey` it was configured with.
+   Both sides then compute the same key: `Box(eph, peer_eph).shared_key()`.
+
+After the handshake, every line is one JSON object `{"enc": base64(nonce+box)}`
+sealed with SecretBox under that key. The link code above sees the same whole
+lines it sees on a plain link. A line that does not open, or is too long, ends
+the link. Handshake I/O has a 10 s timeout, so a silent peer cannot hold a slot.
+
+What this does and does not give:
+
+- Both ends prove their keys, so a man in the middle cannot join without a
+  configured key. Replaying an old handshake fails, because each side signs a
+  fresh ephemeral key.
+- Each line is encrypted and authenticated. The TCP stream keeps lines in order, so
+  an attacker on the path can only cut the connection, not drop, reorder or replay
+  single lines. Each connection has a fresh key, so lines cannot be replayed into
+  another connection.
+- Keys are not rotated. Rotating means changing the key in both configs and
+  restarting both nodes.
+- Trust is per listener: a node that is trusted by A is not trusted by B unless B
+  lists it too.
+
+PyNaCl is needed on both ends of an encrypted link. Machines without it (the
+2.6 iMac, and any machine where PyNaCl is not installed) can still use plain
+links to peers that allow them.
 
 ## Decisions taken during implementation
 

@@ -66,6 +66,24 @@ bin/agentipc vs --ssh node-b --user alice --server general sendfile node-a ./rep
 Use `--password-env NAME` to read the password from an environment variable
 instead of prompting.
 
+Direct links can be encrypted (needs PyNaCl on both ends). Each node prints its
+public key, then the two configs name each other:
+
+```sh
+bin/agentipc node pubkey                    # run on each node; copy the output
+```
+
+```json
+// listener (node-a): trust the dialers, and only accept encrypted links
+{"listen": 7430, "allow": ["192.0.2.20"], "require_encryption": true,
+ "trusted": {"node-b": "<node-b's pubkey>"}}
+// dialer (node-b)
+{"peers": [{"kind": "direct", "host": "192.0.2.10", "port": 7430,
+            "pubkey": "<node-a's pubkey>"}]}
+```
+
+See DESIGN.md, "Link encryption", for the handshake and what it protects.
+
 Remote commands, on nodes that enable them in `config.json`:
 
 ```sh

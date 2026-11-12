@@ -9,11 +9,11 @@ done, and known gaps. [DESIGN.md](DESIGN.md) describes the design.
 
 1. Small C node (phase 11). Router in `cnode/` (see `cnode/README.md`): versioned handshake, routing, forwarding, duplicate suppression, pings, direct listener. Running on gen7. Still to do: virtual server, shell, file transfer.
 2. Android app (phase 06). Sketch only; needs C-node-level work to be useful on the same mesh.
-3. Link encryption (phase 10), then obfuscated HTTP/HTTPS (note only).
+3. Deploy link encryption to the live mesh (needs PyNaCl on each machine), then obfuscated HTTP/HTTPS (note only).
 
 ## Implemented and tested
 
-Automated tests: 71 tests, all passing under Python 3, with and without PyNaCl (2 skip without PyNaCl).
+Automated tests: 146 tests, all passing under Python 3, with and without PyNaCl (7 skip without PyNaCl).
 
 | Area | What works | How it was tested |
 |---|---|---|
@@ -50,7 +50,7 @@ three-hop chain, direct triangle, node loss and recovery, shell on all nodes.
 - Small C node (phase 11). Not started.
 - Android app (phase 06). Kotlin sketch committed (`android/`), not compiled or run: no Android SDK on the development machine, and its java install is broken. Dependency versions are unchecked.
 - Python 2.6 and 2.7 verification: see "Python versions" in DESIGN.md. 2.7 passes the full suite. 2.6 runs the nodes and the CLI, and passes the end-to-end suite with the tests driven by 2.7; its own unit tests cannot run (no `unittest discover`).
-- Link encryption for direct links (phase 10). Allowed by the design (PyNaCl), not built.
+- Link encryption for direct links is built and tested locally (see DESIGN.md, "Link encryption"). Not on the live mesh yet: PyNaCl is missing on the other machines.
 - Obfuscated HTTP/HTTPS transport. Note only.
 - Encrypted file transfer.
 - Encrypted virtual servers on the live mesh. Tested only in the local test suite.

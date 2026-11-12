@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 
-from agentipc import auth, files, shell, vserver
+from agentipc import auth, files, linkcrypt, shell, vserver
 from agentipc.node import Node
 
 CONTROL_HOST = "127.0.0.1"
@@ -26,6 +26,7 @@ DEFAULT_CONTROL_PORT = 7421
 DEFAULT_SSH_COMMAND = "agentipc bridge link"
 MAX_BACKOFF = 60.0
 MODE_LINE_LIMIT = 64
+HANDSHAKE_TIMEOUT = 10
 
 
 def log(msg):
@@ -93,6 +94,7 @@ class Daemon(object):
         self.shell = shell.ShellService(self.node, cfg.get("shell"))
         self._stopping = threading.Event()
         self._sockets = []
+        self.signing_key = None
 
     # ----- lifecycle ---------------------------------------------------
 
@@ -104,6 +106,8 @@ class Daemon(object):
             self.vs.prune()
             _thread(self._prune_loop)
         self._listen_control()
+        if self._uses_encryption():
+            self.signing_key = linkcrypt.identity(self.home)
         if self.cfg.get("allow") and self.cfg.get("listen"):
             self._listen_direct()
         for peer in self.cfg.get("peers", []):
@@ -113,6 +117,11 @@ class Daemon(object):
                 _thread(self._direct_dialer, peer)
             else:
                 log("ignoring peer with unknown kind %r" % peer.get("kind"))
+
+    def _uses_encryption(self):
+        peers = self.cfg.get("peers", [])
+        return bool(self.cfg.get("trusted") or self.cfg.get("require_encryption")
+                    or any(peer.get("pubkey") for peer in peers))
 
     def _prune_loop(self):
         while not _wait(self._stopping, PRUNE_INTERVAL):
@@ -188,7 +197,13 @@ class Daemon(object):
                 return
             mode = mode[:2]
         if mode == ["MODE", "link"]:
+            if kind == "direct" and self.cfg.get("require_encryption"):
+                log("refused plain direct link: require_encryption is set")
+                _shutdown(conn)
+                return
             self.node.make_link(rfile, wfile, kind, closer=lambda: _shutdown(conn))
+        elif mode == ["MODE", "linkenc"]:
+            self._accept_encrypted(conn, rfile, wfile, kind)
         elif mode == ["MODE", "client"]:
             try:
                 vserver.ClientSession(self.vs, rfile, wfile).run()
@@ -196,6 +211,23 @@ class Daemon(object):
                 _shutdown(conn)
         else:
             _shutdown(conn)
+
+    def _accept_encrypted(self, conn, rfile, wfile, kind):
+        trusted = self.cfg.get("trusted", {})
+        if self.signing_key is None or not trusted:
+            log("refused encrypted link: no trusted nodes configured")
+            _shutdown(conn)
+            return
+        conn.settimeout(HANDSHAKE_TIMEOUT)
+        try:
+            streams, name = linkcrypt.accept(rfile, wfile, self.node.id, self.signing_key, trusted)
+        except (linkcrypt.LinkCryptoError, socket.error, OSError) as exc:
+            log("refused encrypted link: %s" % exc)
+            _shutdown(conn)
+            return
+        conn.settimeout(None)
+        log("encrypted link from %s" % name)
+        self.node.make_link(streams, streams, kind, closer=lambda: _shutdown(conn))
 
     def _replica_loop(self):
         while not _wait(self._stopping, auth.REPLICA_INTERVAL):
@@ -225,15 +257,27 @@ class Daemon(object):
         return link
 
     def _direct_dialer(self, peer):
-        self._redial(lambda: self._open_direct(peer["host"], peer["port"]))
+        self._redial(lambda: self._open_direct(peer))
 
-    def _open_direct(self, host, port):
-        sock = socket.create_connection((host, port), timeout=10)
-        sock.settimeout(None)
+    def _open_direct(self, peer):
+        if not peer.get("pubkey") and self.cfg.get("require_encryption"):
+            raise ValueError("peer %s has no pubkey and require_encryption is set" % peer["host"])
+        sock = socket.create_connection((peer["host"], peer["port"]), timeout=HANDSHAKE_TIMEOUT)
         rfile = sock.makefile("rb")
         wfile = sock.makefile("wb")
-        wfile.write(b"MODE link\n")
-        wfile.flush()
+        try:
+            if peer.get("pubkey"):
+                wfile.write(b"MODE linkenc\n")
+                wfile.flush()
+                streams, _ = linkcrypt.dial(rfile, wfile, self.node.id, self.signing_key, peer["pubkey"])
+                rfile, wfile = streams, streams
+            else:
+                wfile.write(b"MODE link\n")
+                wfile.flush()
+        except (linkcrypt.LinkCryptoError, socket.error, OSError):
+            _shutdown(sock)
+            raise
+        sock.settimeout(None)
         return self.node.make_link(rfile, wfile, "direct", closer=lambda: _shutdown(sock))
 
     def _redial(self, open_link):

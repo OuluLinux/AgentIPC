@@ -15,7 +15,7 @@ import subprocess
 import sys
 import threading
 
-from agentipc import auth, client, config as config_mod, crypto
+from agentipc import auth, client, config as config_mod, crypto, linkcrypt
 from agentipc.daemon import DEFAULT_CONTROL_PORT, Daemon, control_token
 from agentipc.store import Store, StoreError, check_agent
 
@@ -174,6 +174,10 @@ def print_members(key, members):
 # ----- node, bridge and accounts (phases 02-05) -------------------------
 
 def cmd_node_run(args, ctx):
+    if args.action == "pubkey":
+        # The text to put in a peer's "pubkey" or a listener's "trusted", for encrypted links.
+        print(linkcrypt.public_key_hex(linkcrypt.identity(ctx.home)))
+        return
     # Flags override the config file, so one machine can run several instances.
     if args.node:
         ctx.cfg["node"] = args.node
@@ -463,7 +467,7 @@ def build_parser():
     sp.set_defaults(func=cmd_channels)
 
     sp = sub.add_parser("node", help="run this machine's mesh node")
-    sp.add_argument("action", choices=["run"])
+    sp.add_argument("action", choices=["run", "pubkey"])
     sp.add_argument("--node", help="node id (default: config)")
     sp.add_argument("--control-port", type=int, help="local control port (default: config or 7421)")
     sp.add_argument("--listen", type=int, help="direct TCP port (needs an allow list in config)")
