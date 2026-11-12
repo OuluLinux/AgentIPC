@@ -16,7 +16,7 @@ import sys
 import threading
 
 from agentipc import auth, client, config as config_mod, crypto, linkcrypt
-from agentipc.daemon import DEFAULT_CONTROL_PORT, Daemon, control_token
+from agentipc.daemon import DEFAULT_CONTROL_PORT, TOKEN_FILE, Daemon, control_token
 from agentipc.store import Store, StoreError, check_agent
 
 TUTORIAL = """\
@@ -173,7 +173,43 @@ def print_members(key, members):
 
 # ----- node, bridge and accounts (phases 02-05) -------------------------
 
+def cmd_node_status(ctx):
+    """Asks the running node for its live claim and links, over its control port."""
+    if not os.path.exists(os.path.join(ctx.home, TOKEN_FILE)):
+        raise StoreError("no node has run in %s" % ctx.home)
+    port = ctx.cfg.get("control_port", DEFAULT_CONTROL_PORT)
+    try:
+        sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+    except socket.error:
+        raise StoreError("no node running on 127.0.0.1:%d" % port)
+    sock.sendall(("MODE status %s\n" % control_token(ctx.home)).encode("ascii"))
+    chunks = []
+    while True:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    sock.close()
+    if not chunks:
+        raise StoreError("the node on port %d did not answer status; an older build closes the request, "
+                         "so restart it to use status" % port)
+    st = json.loads(b"".join(chunks).decode("utf-8"))
+    role = "authority" if st["is_authority"] else "follower"
+    print("node %s: %s, authority %s, epoch %s" % (st["node"], role, st["authority"], st["epoch"]))
+    if st["accounts_file"] is not None:
+        acc = st["accounts_file"]
+        print("accounts file: authority %s, epoch %s, rev %s (%s)" % (
+            acc["authority"], acc["epoch"], acc["rev"],
+            "matches the live claim" if st["file_matches_claim"] else "DIFFERS from the live claim: restart this node"))
+    for link in st["links"]:
+        print("link: %s (%s)" % (link["peer"], link["kind"]))
+    if not st["links"]:
+        print("links: none")
+
+
 def cmd_node_run(args, ctx):
+    if args.action == "status":
+        return cmd_node_status(ctx)
     if args.action == "pubkey":
         # The text to put in a peer's "pubkey" or a listener's "trusted", for encrypted links.
         print(linkcrypt.public_key_hex(linkcrypt.identity(ctx.home)))
@@ -467,7 +503,7 @@ def build_parser():
     sp.set_defaults(func=cmd_channels)
 
     sp = sub.add_parser("node", help="run this machine's mesh node")
-    sp.add_argument("action", choices=["run", "pubkey"])
+    sp.add_argument("action", choices=["run", "pubkey", "status"])
     sp.add_argument("--node", help="node id (default: config)")
     sp.add_argument("--control-port", type=int, help="local control port (default: config or 7421)")
     sp.add_argument("--listen", type=int, help="direct TCP port (needs an allow list in config)")

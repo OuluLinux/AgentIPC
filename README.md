@@ -44,7 +44,11 @@ See `examples/config.example.json`. Real hosts stay out of the repo.
 
 ```sh
 bin/agentipc node run                       # start this machine's node
+bin/agentipc node status                    # the running node's claim, links, and whether its accounts file agrees
 ```
+
+`node status` asks the running node over its local control port. A node started
+before this command existed does not answer it; restart that node to use it.
 
 On the authority node, create accounts and servers (the file is private):
 

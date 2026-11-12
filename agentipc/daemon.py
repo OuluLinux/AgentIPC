@@ -11,6 +11,7 @@ Each connection begins with one line, `MODE link` or `MODE client`.
 """
 
 import binascii
+import json
 import os
 import socket
 import subprocess
@@ -40,6 +41,20 @@ def _shutdown(sock):
     except socket.error:
         pass
     sock.close()
+
+
+def _refuse(conn):
+    """Tells a refused client why. The client's request is drained before the close:
+    closing with unread data resets the connection, and the client may never read the reason."""
+    try:
+        conn.sendall(b"ERR not-allowed\n")
+        conn.shutdown(socket.SHUT_WR)
+        conn.settimeout(2)
+        while conn.recv(4096):
+            pass
+    except (socket.error, OSError):
+        pass
+    _shutdown(conn)
 
 
 TOKEN_FILE = "control.token"
@@ -168,11 +183,7 @@ class Daemon(object):
                 break
             if allow is not None and addr[0] not in allow:
                 log("refused direct connection from %s" % addr[0])
-                try:
-                    conn.sendall(b"ERR not-allowed\n")
-                except (socket.error, OSError):
-                    pass
-                _shutdown(conn)
+                _thread(_refuse, conn)
                 continue
             _thread(self._serve, conn, "direct" if allow is not None else "ssh", control)
 
@@ -204,12 +215,42 @@ class Daemon(object):
             self.node.make_link(rfile, wfile, kind, closer=lambda: _shutdown(conn))
         elif mode == ["MODE", "linkenc"]:
             self._accept_encrypted(conn, rfile, wfile, kind)
+        elif mode == ["MODE", "status"] and control:
+            self._send_status(conn, wfile)
         elif mode == ["MODE", "client"]:
             try:
                 vserver.ClientSession(self.vs, rfile, wfile).run()
             finally:
                 _shutdown(conn)
         else:
+            _shutdown(conn)
+
+    def status(self):
+        """What this node is doing now: its live claim, its links, and what its accounts file says."""
+        node = self.node
+        accounts = None
+        path = os.path.join(self.home, "accounts.json")
+        if os.path.exists(path):
+            with open(path) as fh:
+                data = json.load(fh)
+            accounts = {"authority": data.get("authority"), "epoch": data.get("epoch"), "rev": data.get("rev")}
+        return {
+            "node": node.id,
+            "authority": node.authority,
+            "epoch": node.epoch,
+            "is_authority": node.authority == node.id,
+            "standby": node.standby,
+            "listen": self.listen_port,
+            "links": [{"peer": link.peer, "kind": link.kind} for link in list(node.links)],
+            "accounts_file": accounts,
+            "file_matches_claim": accounts is None or (accounts["authority"], accounts["epoch"]) == (node.authority, node.epoch),
+        }
+
+    def _send_status(self, conn, wfile):
+        try:
+            wfile.write((json.dumps(self.status(), sort_keys=True) + "\n").encode("ascii"))
+            wfile.flush()
+        finally:
             _shutdown(conn)
 
     def _accept_encrypted(self, conn, rfile, wfile, kind):

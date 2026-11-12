@@ -13,7 +13,7 @@ import threading
 import time
 import unittest
 
-from agentipc import auth, cli, crypto, files, linkcrypt, proto
+from agentipc import auth, cli, crypto, daemon, files, linkcrypt, proto
 from agentipc.node import Node
 from agentipc.routing import SeenCache, Topology
 from agentipc.vserver import RecordStore, valid_record
@@ -611,3 +611,31 @@ class LinkCryptTest(unittest.TestCase):
         self.assertEqual(linkcrypt.public_key_hex(first), linkcrypt.public_key_hex(again))
         mode = stat.S_IMODE(os.stat(os.path.join(home, linkcrypt.IDENTITY_FILE)).st_mode)
         self.assertEqual(mode, 0o600)
+
+
+class StatusTest(unittest.TestCase):
+    """node status reports the live claim and whether the accounts file agrees with it."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.accounts = os.path.join(self.dir, "accounts.json")
+        with open(self.accounts, "w") as fh:
+            json.dump({"authority": "gen7", "epoch": 4, "rev": 4, "users": {}, "servers": {}}, fh)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_matching_file_and_live_claim(self):
+        d = daemon.Daemon("gen7", {"node": "gen7"}, self.dir)
+        st = d.status()
+        self.assertEqual((st["authority"], st["epoch"], st["is_authority"]), ("gen7", 4, True))
+        self.assertTrue(st["file_matches_claim"])
+        self.assertEqual(st["links"], [])
+
+    def test_file_changed_after_start_is_flagged(self):
+        d = daemon.Daemon("gen7", {"node": "gen7"}, self.dir)
+        with open(self.accounts, "w") as fh:
+            json.dump({"authority": "mg", "epoch": 5, "rev": 5, "users": {}, "servers": {}}, fh)
+        st = d.status()
+        self.assertEqual(st["epoch"], 4)
+        self.assertFalse(st["file_matches_claim"])

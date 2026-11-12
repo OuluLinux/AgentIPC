@@ -385,6 +385,20 @@ PyNaCl is needed on both ends of an encrypted link. Machines without it (the
 2.6 iMac, and any machine where PyNaCl is not installed) can still use plain
 links to peers that allow them.
 
+## Node status and refused direct links
+
+`agentipc node status` sends `MODE status SECRET` on the local control port. The
+node answers with one JSON line: its live claim (authority and epoch), whether it
+is the authority, its direct and ssh links, and the claim in its accounts file.
+`file_matches_claim` is false when the file was changed after the node started.
+A node that was started before the file was changed still runs the old claim
+until it is restarted, so restart after any change to the file.
+
+A refused direct client gets `ERR not-allowed`. The listener sends the reason,
+half-closes, drains the client's request for up to 2 s, and only then closes. A
+close with unread data would reset the connection, and the client could lose the
+reason.
+
 ## Decisions taken during implementation
 
 - **Link crypto:** allowed. The earlier "no custom crypto" rule is withdrawn.
