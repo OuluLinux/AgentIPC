@@ -678,3 +678,28 @@ class PositionTest(unittest.TestCase):
         with open(os.path.join(self.dir, positions.POSITIONS_FILE), "w") as fh:
             fh.write("not json")
         self.assertEqual(positions.load(self.dir), {})
+
+
+class _Args(object):
+    def __init__(self, password_env):
+        self.password_env = password_env
+        self.user = "s1"
+
+
+class ReadPasswordTest(unittest.TestCase):
+    """Agents have no terminal: a missing variable is an error, never a prompt."""
+
+    def test_unset_variable_is_an_error(self):
+        args = _Args("AGENTIPC_TEST_UNSET_PW")
+        os.environ.pop("AGENTIPC_TEST_UNSET_PW", None)
+        with self.assertRaises(cli.StoreError) as caught:
+            cli.read_password(args)
+        self.assertIn("AGENTIPC_TEST_UNSET_PW is not set", str(caught.exception))
+
+    def test_variable_is_read(self):
+        os.environ["AGENTIPC_TEST_PW"] = "pw-text"
+        try:
+            self.assertEqual(cli.read_password(_Args("AGENTIPC_TEST_PW")), "pw-text")
+        finally:
+            del os.environ["AGENTIPC_TEST_PW"]
+

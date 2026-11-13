@@ -380,16 +380,30 @@ def cmd_send(args, ctx):
 # ----- virtual server client (phases 05, 07) ----------------------------
 
 def open_vs(args, ctx):
+    password = read_password(args)
     if args.direct:
         host, port_text = args.direct.rsplit(":", 1)
         conn = client.open_direct(host, int(port_text))
     else:
         target, port, key = resolve_target(args.ssh, ctx.cfg, args.key)
         conn = client.open_ssh(target, port, key, command=target_command(args.ssh, ctx.cfg) or "agentipc bridge client")
-    password = os.environ.get(args.password_env) if args.password_env else None
-    if password is None:
-        password = getpass.getpass("password for %s: " % args.user)
     return client.login(conn, args.user, args.server, password)
+
+
+def read_password(args):
+    """The password from --password-env, or a prompt on a terminal. Agents have no terminal,
+    so a missing variable or a missing terminal is an error, not a prompt."""
+    if args.password_env:
+        password = os.environ.get(args.password_env)
+        if password is None:
+            raise StoreError("environment variable %s is not set (named by --password-env)" % args.password_env)
+        return password
+    if not sys.stdin.isatty():
+        raise StoreError("no password: pass --password-env NAME, since there is no terminal to ask on")
+    try:
+        return getpass.getpass("password for %s: " % args.user)
+    except EOFError:
+        raise StoreError("no password entered")
 
 
 def print_message(rec):
